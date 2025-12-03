@@ -94,7 +94,7 @@ st.markdown(
 # =========================
 st.title(f"🌿 {APP_TITLE}")
 st.markdown(f"**Client:** {CLIENT_NAME}")
-st.markmarkdown(APP_TAGLINE)
+st.markdown(APP_TAGLINE)
 st.markdown("---")
 
 if not PLOTLY_AVAILABLE:
