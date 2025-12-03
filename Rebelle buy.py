@@ -94,7 +94,7 @@ st.markdown(
 # =========================
 st.title(f"🌿 {APP_TITLE}")
 st.markdown(f"**Client:** {CLIENT_NAME}")
-st.markdown(APP_TAGLINE)
+st.markmarkdown(APP_TAGLINE)
 st.markdown("---")
 
 if not PLOTLY_AVAILABLE:
@@ -255,25 +255,66 @@ if inv_file and product_sales_file:
         sales_raw = pd.read_excel(product_sales_file)
         sales_raw.columns = sales_raw.columns.astype(str).str.strip().str.lower()
 
-        if "mastercategory" not in sales_raw.columns and "category" in sales_raw.columns:
-            sales_raw = sales_raw.rename(columns={"category": "mastercategory"})
+        # Ensure we have a mastercategory
+        if "mastercategory" not in sales_raw.columns:
+            if "category" in sales_raw.columns:
+                sales_raw = sales_raw.rename(columns={"category": "mastercategory"})
+            else:
+                st.error(
+                    "Product Sales Report is missing a 'mastercategory' or 'category' column."
+                )
+                st.stop()
 
-        sales_raw = sales_raw.rename(
-            columns={
-                "product": "product",
-                "quantity sold": "unitssold",
-                # ignore weight as size source; we'll parse from product text
-            }
-        )
+        # Detect product name column
+        product_col_candidates = [
+            "product",
+            "product name",
+            "productname",
+            "item",
+            "item name",
+            "itemname",
+            "name",
+        ]
+        name_col = None
+        for c in product_col_candidates:
+            if c in sales_raw.columns:
+                name_col = c
+                break
+
+        if name_col is None:
+            st.error(
+                "Could not find a product name column in the Product Sales Report. "
+                "Expected one of: product, product name, item, item name, name."
+            )
+            st.stop()
+
+        sales_raw["product_name"] = sales_raw[name_col].astype(str)
+
+        # Detect / create unitssold
+        if "unitssold" not in sales_raw.columns:
+            qty_candidates = ["quantity sold", "qty sold", "units sold", "units"]
+            qty_col = None
+            for c in qty_candidates:
+                if c in sales_raw.columns:
+                    qty_col = c
+                    break
+
+            if qty_col is not None:
+                sales_raw["unitssold"] = sales_raw[qty_col]
+            else:
+                st.warning(
+                    "No 'quantity sold' style column found; setting unitssold to 0 for all rows."
+                )
+                sales_raw["unitssold"] = 0
 
         sales_df = sales_raw[sales_raw["mastercategory"].notna()].copy()
         sales_df["mastercategory"] = (
             sales_df["mastercategory"].astype(str).str.strip().str.lower()
         )
 
-        # Normalize size on sales using product text, just like inventory
+        # Normalize size on sales using product_name text, just like inventory
         sales_df["packagesize"] = sales_df.apply(
-            lambda row: extract_size(row["product"], row["mastercategory"]),
+            lambda row: extract_size(row["product_name"], row["mastercategory"]),
             axis=1,
         )
 
