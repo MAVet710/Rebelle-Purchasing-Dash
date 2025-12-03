@@ -91,8 +91,9 @@ st.markdown("---")
 if not PLOTLY_AVAILABLE:
     st.warning(
         "⚠️ Plotly is not installed in this environment. Charts will be disabled.\n\n"
-        "To enable visuals, install Plotly with:\n"
-        "`pip install plotly`"
+        "If you're running this on Streamlit Cloud via GitHub, make sure your "
+        "`requirements.txt` file includes:\n\n"
+        "`plotly`"
     )
 
 # =========================
@@ -359,7 +360,7 @@ if inv_file and product_sales_file:
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info(
-                "📈 Chart unavailable — install Plotly (`pip install plotly`) to enable visuals.\n\n"
+                "📈 Chart unavailable — install Plotly (`plotly` in requirements.txt) to enable visuals.\n\n"
                 "Table output and CSV export remain fully functional."
             )
             st.dataframe(priority_summary, use_container_width=True)
