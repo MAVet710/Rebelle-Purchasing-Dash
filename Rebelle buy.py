@@ -21,16 +21,19 @@ APP_TITLE = f"{CLIENT_NAME} Purchasing Dashboard"
 APP_TAGLINE = "Streamlined purchasing visibility powered by Dutchie data."
 LICENSE_FOOTER = f"Licensed exclusively to {CLIENT_NAME} • Powered by MAVet710 Analytics"
 
-# 🟢 UPDATED PAGE ICON (FAVICON)
-page_icon_url = "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/ef50d34e20caf45231642e957137d6141082dbb9/rebelle.jpg"
+# Tab icon (favicon)
+page_icon_url = (
+    "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
+    "ef50d34e20caf45231642e957137d6141082dbb9/rebelle.jpg"
+)
 
 st.set_page_config(
     page_title=APP_TITLE,
     layout="wide",
-    page_icon=page_icon_url
+    page_icon=page_icon_url,
 )
 
-# 🟢 UPDATED BACKGROUND IMAGE
+# Background image
 background_url = (
     "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
     "ef50d34e20caf45231642e957137d6141082dbb9/rebelle%20main.png"
@@ -97,7 +100,7 @@ st.markdown("---")
 if not PLOTLY_AVAILABLE:
     st.warning(
         "⚠️ Plotly is not installed in this environment. Charts will be disabled.\n\n"
-        "If using Streamlit Cloud, add `plotly` to your requirements.txt file."
+        "If using Streamlit Cloud, add `plotly` to your `requirements.txt` file."
     )
 
 # =========================
@@ -117,13 +120,29 @@ aging_file = st.sidebar.file_uploader("Inventory Aging Report (optional)", type=
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ Forecast Settings")
 
-doh_threshold = st.sidebar.number_input("Target Days on Hand", 1, 60, 21)
-velocity_adjustment = st.sidebar.number_input("Velocity Adjustment", 0.01, 5.0, 0.50, 0.01)
+doh_threshold = st.sidebar.number_input(
+    "Target Days on Hand",
+    min_value=1,
+    max_value=60,
+    value=21,
+    help="Minimum days of coverage you want per category/package size group.",
+)
+
+velocity_adjustment = st.sidebar.number_input(
+    "Velocity Adjustment",
+    min_value=0.01,
+    max_value=5.0,
+    value=0.50,
+    step=0.01,
+    help="Multiply avg units/day by this factor (e.g., 0.5 for slower store).",
+)
 
 st.sidebar.markdown("---")
 st.sidebar.header("📅 Sales Period")
+st.sidebar.write("Select the number of days represented in your sales report:")
 date_diff = st.sidebar.slider("Days in Sales Period", 7, 90, 60)
 
+# Metric filter state
 filter_state = st.session_state.setdefault("metric_filter", "None")
 
 # =========================
@@ -132,33 +151,45 @@ filter_state = st.session_state.setdefault("metric_filter", "None")
 if inv_file and product_sales_file:
     try:
         # ----------------------------
-        # Inventory load
+        # Inventory load & normalize
         # ----------------------------
         inv_df = pd.read_csv(inv_file)
         inv_df.columns = inv_df.columns.str.strip().str.lower()
 
-        inv_df = inv_df.rename(columns={
-            "product": "itemname",
-            "category": "subcategory",
-            "available": "onhandunits"
-        })
+        inv_df = inv_df.rename(
+            columns={
+                "product": "itemname",
+                "category": "subcategory",
+                "available": "onhandunits",
+            }
+        )
 
-        inv_df["onhandunits"] = pd.to_numeric(inv_df.get("onhandunits", 0), errors="coerce").fillna(0)
-        inv_df["subcategory"] = inv_df["subcategory"].astype(str).strip().str.lower()
+        inv_df["onhandunits"] = pd.to_numeric(
+            inv_df.get("onhandunits", 0), errors="coerce"
+        ).fillna(0)
+        inv_df["subcategory"] = (
+            inv_df["subcategory"].astype(str).str.strip().str.lower()
+        )
 
         def extract_size(name):
             name = str(name).lower()
             mg = re.search(r"(\d+\s?mg)", name)
             g = re.search(r"(\d+\.?\d*\s?(g|oz))", name)
-            return mg.group(1) if mg else g.group(1) if g else "unspecified"
+            if mg:
+                return mg.group(1)
+            if g:
+                return g.group(1)
+            return "unspecified"
 
         inv_df["packagesize"] = inv_df["itemname"].apply(extract_size)
         inv_df["subcat_group"] = inv_df["subcategory"] + " – " + inv_df["packagesize"]
 
-        inv_df = inv_df[["itemname", "packagesize", "subcategory", "subcat_group", "onhandunits"]]
+        inv_df = inv_df[
+            ["itemname", "packagesize", "subcategory", "subcat_group", "onhandunits"]
+        ]
 
         # ----------------------------
-        # Sales load
+        # Sales load & normalize
         # ----------------------------
         sales_raw = pd.read_excel(product_sales_file)
         sales_raw.columns = sales_raw.columns.astype(str).str.strip().str.lower()
@@ -166,49 +197,64 @@ if inv_file and product_sales_file:
         if "mastercategory" not in sales_raw.columns and "category" in sales_raw.columns:
             sales_raw = sales_raw.rename(columns={"category": "mastercategory"})
 
-        sales_raw = sales_raw.rename(columns={
-            "product": "product",
-            "quantity sold": "unitssold",
-            "weight": "packagesize"
-        })
+        sales_raw = sales_raw.rename(
+            columns={
+                "product": "product",
+                "quantity sold": "unitssold",
+                "weight": "packagesize",
+            }
+        )
 
         sales_df = sales_raw[sales_raw["mastercategory"].notna()].copy()
-        sales_df["mastercategory"] = sales_df["mastercategory"].astype(str).strip().str.lower()
+        sales_df["mastercategory"] = (
+            sales_df["mastercategory"].astype(str).str.strip().str.lower()
+        )
         sales_df = sales_df[~sales_df["mastercategory"].str.contains("accessor")]
         sales_df = sales_df[sales_df["mastercategory"] != "all"]
 
         # ----------------------------
         # Aggregate + velocity
         # ----------------------------
-        inventory_summary = inv_df.groupby(["subcategory", "packagesize"])["onhandunits"].sum().reset_index()
+        inventory_summary = (
+            inv_df.groupby(["subcategory", "packagesize"])["onhandunits"]
+            .sum()
+            .reset_index()
+        )
 
         agg = sales_df.groupby("mastercategory").agg({"unitssold": "sum"}).reset_index()
-        agg["avgunitsperday"] = agg["unitssold"] / date_diff * velocity_adjustment
+        agg["avgunitsperday"] = (
+            agg["unitssold"].astype(float) / date_diff * velocity_adjustment
+        )
 
         detail = pd.merge(
             inventory_summary,
             agg,
             left_on="subcategory",
             right_on="mastercategory",
-            how="left"
+            how="left",
         ).fillna(0)
 
         detail["daysonhand"] = np.where(
             detail["avgunitsperday"] > 0,
             detail["onhandunits"] / detail["avgunitsperday"],
-            0
+            0,
         ).astype(int)
 
         detail["reorderqty"] = np.where(
             detail["daysonhand"] < doh_threshold,
-            np.ceil((doh_threshold - detail["daysonhand"]) * detail["avgunitsperday"]).astype(int),
-            0
+            np.ceil(
+                (doh_threshold - detail["daysonhand"]) * detail["avgunitsperday"]
+            ).astype(int),
+            0,
         )
 
         def reorder_tag(row):
-            if row["daysonhand"] <= 7: return "1 – Reorder ASAP"
-            if row["daysonhand"] <= 21: return "2 – Watch Closely"
-            if row["avgunitsperday"] == 0: return "4 – Dead Item"
+            if row["daysonhand"] <= 7:
+                return "1 – Reorder ASAP"
+            if row["daysonhand"] <= 21:
+                return "2 – Watch Closely"
+            if row["avgunitsperday"] == 0:
+                return "4 – Dead Item"
             return "3 – Comfortable Cover"
 
         detail["reorderpriority"] = detail.apply(reorder_tag, axis=1)
@@ -224,22 +270,49 @@ if inv_file and product_sales_file:
         st.markdown("### 📊 Portfolio Snapshot")
 
         c1, c2, c3, c4 = st.columns(4)
-        if c1.button(f"Total Units Sold: {total_units:,}"): st.session_state.metric_filter = "None"
-        if c2.button(f"Active Subcategories: {active_categories}"): st.session_state.metric_filter = "None"
-        if c3.button(f"Watchlist Items: {watchlist_items}"): st.session_state.metric_filter = "Watchlist"
-        if c4.button(f"Reorder ASAP: {reorder_asap}"): st.session_state.metric_filter = "Reorder ASAP"
+        if c1.button(f"Total Units Sold: {total_units:,}"):
+            st.session_state.metric_filter = "None"
+        c1.markdown(
+            '<span class="metric-label">Across selected period</span>',
+            unsafe_allow_html=True,
+        )
+
+        if c2.button(f"Active Subcategories: {active_categories}"):
+            st.session_state.metric_filter = "None"
+        c2.markdown(
+            '<span class="metric-label">Unique subcategory groups</span>',
+            unsafe_allow_html=True,
+        )
+
+        if c3.button(f"Watchlist Items: {watchlist_items}"):
+            st.session_state.metric_filter = "Watchlist"
+        c3.markdown(
+            '<span class="metric-label">Approaching DOH threshold</span>',
+            unsafe_allow_html=True,
+        )
+
+        if c4.button(f"Reorder ASAP: {reorder_asap}"):
+            st.session_state.metric_filter = "Reorder ASAP"
+        c4.markdown(
+            '<span class="metric-label">Critically low coverage</span>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("---")
+
+        # =========================
+        # FILTERED VIEW
+        # =========================
+        detail_view = detail.copy()
+        if st.session_state.metric_filter == "Watchlist":
+            detail_view = detail_view[detail_view["reorderpriority"] == "2 – Watch Closely"]
+        elif st.session_state.metric_filter == "Reorder ASAP":
+            detail_view = detail_view[detail_view["reorderpriority"] == "1 – Reorder ASAP"]
 
         # =========================
         # TABLES
         # =========================
         st.markdown("### 🧮 Inventory Forecast by Subcategory")
-
-        detail_view = detail.copy()
-
-        if st.session_state.metric_filter == "Watchlist":
-            detail_view = detail_view[detail_view["reorderpriority"] == "2 – Watch Closely"]
-        elif st.session_state.metric_filter == "Reorder ASAP":
-            detail_view = detail_view[detail_view["reorderpriority"] == "1 – Reorder ASAP"]
 
         for cat, group in detail_view.groupby("subcategory"):
             avg_doh = int(group["daysonhand"].mean())
@@ -250,7 +323,12 @@ if inv_file and product_sales_file:
         # EXPORT
         # =========================
         csv = detail.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download CSV", csv, "rebelle_forecast.csv", "text/csv")
+        st.download_button(
+            "📥 Download CSV",
+            csv,
+            "rebelle_forecast.csv",
+            "text/csv",
+        )
 
         # =========================
         # CHART
@@ -265,11 +343,18 @@ if inv_file and product_sales_file:
         )
 
         if PLOTLY_AVAILABLE:
-            fig = px.bar(priority_summary, x="reorderpriority", y="itemcount",
-                         title="Item Count by Reorder Priority")
+            fig = px.bar(
+                priority_summary,
+                x="reorderpriority",
+                y="itemcount",
+                title="Item Count by Reorder Priority",
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Plotly not installed. Add `plotly` to requirements.txt to enable charts.")
+            st.info(
+                "Plotly not installed. Add `plotly` to requirements.txt to enable charts."
+            )
+            st.dataframe(priority_summary, use_container_width=True)
 
     except Exception as e:
         st.error(f"Error processing files: {e}")
