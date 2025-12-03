@@ -255,6 +255,8 @@ if inv_file and product_sales_file:
 
         # ----------------------------
         # Aggregate + velocity
+        #   → sales grouped by mastercategory + packagesize
+        #   → merge on subcategory + packagesize so detail rows aren't duplicated
         # ----------------------------
         inventory_summary = (
             inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"]
@@ -262,7 +264,11 @@ if inv_file and product_sales_file:
             .reset_index()
         )
 
-        agg = sales_df.groupby("mastercategory").agg({"unitssold": "sum"}).reset_index()
+        agg = (
+            sales_df.groupby(["mastercategory", "packagesize"])
+            .agg({"unitssold": "sum"})
+            .reset_index()
+        )
         agg["avgunitsperday"] = (
             agg["unitssold"].astype(float) / date_diff * velocity_adjustment
         )
@@ -270,8 +276,8 @@ if inv_file and product_sales_file:
         detail = pd.merge(
             inventory_summary,
             agg,
-            left_on="subcategory",
-            right_on="mastercategory",
+            left_on=["subcategory", "packagesize"],
+            right_on=["mastercategory", "packagesize"],
             how="left",
         ).fillna(0)
 
@@ -391,7 +397,7 @@ if inv_file and product_sales_file:
         st.markdown("### 🧮 Inventory Forecast by Subcategory")
 
         for cat, group in detail_view.groupby("subcategory"):
-            avg_doh = int(group["daysonhand"].mean())
+            avg_doh = int(group["daysonhand"].mean()) if len(group) > 0 else 0
             with st.expander(f"{cat.title()} – Avg DOH: {avg_doh}"):
                 preferred_cols = [
                     "mastercategory",
