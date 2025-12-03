@@ -260,9 +260,34 @@ if inv_file and product_sales_file:
         detail["reorderpriority"] = detail.apply(reorder_tag, axis=1)
 
         # =========================
+        # CATEGORY FILTER (NEW)
+        # =========================
+        all_cats = sorted(detail["subcategory"].unique())
+        # Default: hide anything with "accessor" in the name if present
+        default_cats = [c for c in all_cats if "accessor" not in c]
+        if not default_cats:
+            default_cats = all_cats
+
+        st.sidebar.markdown("---")
+        st.sidebar.header("🔎 Category Filter")
+        selected_cats = st.sidebar.multiselect(
+            "Visible Product Categories",
+            options=all_cats,
+            default=default_cats,
+            help="Toggle which categories appear in the metrics, tables, and chart.",
+        )
+
+        if selected_cats:
+            detail = detail[detail["subcategory"].isin(selected_cats)]
+            sales_for_metrics = sales_df[sales_df["mastercategory"].isin(selected_cats)]
+        else:
+            # If user de-selects all, keep everything to avoid empty state confusion
+            sales_for_metrics = sales_df.copy()
+
+        # =========================
         # METRICS
         # =========================
-        total_units = int(sales_df["unitssold"].sum())
+        total_units = int(sales_for_metrics["unitssold"].sum())
         active_categories = detail["subcategory"].nunique()
         reorder_asap = (detail["reorderpriority"] == "1 – Reorder ASAP").sum()
         watchlist_items = (detail["reorderpriority"] == "2 – Watch Closely").sum()
@@ -273,14 +298,14 @@ if inv_file and product_sales_file:
         if c1.button(f"Total Units Sold: {total_units:,}"):
             st.session_state.metric_filter = "None"
         c1.markdown(
-            '<span class="metric-label">Across selected period</span>',
+            '<span class="metric-label">Across selected period (filtered categories)</span>',
             unsafe_allow_html=True,
         )
 
         if c2.button(f"Active Subcategories: {active_categories}"):
             st.session_state.metric_filter = "None"
         c2.markdown(
-            '<span class="metric-label">Unique subcategory groups</span>',
+            '<span class="metric-label">Visible subcategory groups</span>',
             unsafe_allow_html=True,
         )
 
@@ -301,7 +326,7 @@ if inv_file and product_sales_file:
         st.markdown("---")
 
         # =========================
-        # FILTERED VIEW
+        # FILTERED VIEW FOR PRIORITY BUTTONS
         # =========================
         detail_view = detail.copy()
         if st.session_state.metric_filter == "Watchlist":
@@ -347,7 +372,7 @@ if inv_file and product_sales_file:
                 priority_summary,
                 x="reorderpriority",
                 y="itemcount",
-                title="Item Count by Reorder Priority",
+                title="Item Count by Reorder Priority (Filtered Categories)",
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
