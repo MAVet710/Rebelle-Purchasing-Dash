@@ -207,22 +207,40 @@ if inv_file and product_sales_file:
 
             return base_type
 
-        # Existing: package size parsing from name
-        def extract_size(name):
-            name = str(name).lower()
-            mg = re.search(r"(\d+\s?mg)", name)
-            g = re.search(r"(\d+\.?\d*\s?(g|oz))", name)
+        # --- PACKAGE SIZE PARSER (mg, g, PLUS .5 / 0.5 VAPE LOGIC) ---
+        def extract_size(name, subcat=None):
+            s = str(name).lower()
+            c = str(subcat).lower() if subcat is not None else s
+
+            # mg patterns (e.g. 10mg, 5.5 mg)
+            mg = re.search(r"(\d+(\.\d+)?\s?mg)", s)
             if mg:
-                return mg.group(1)
+                return mg.group(1).replace(" ", "")
+
+            # gram patterns: 1g, 0.5g, .5g, 1.0 g, etc.
+            g = re.search(r"((?:\d+\.?\d*|\.\d+)\s?g)", s)
             if g:
-                return g.group(1)
+                return g.group(1).replace(" ", "")
+
+            # vape context: bare 0.5 or .5 → treat as 0.5g
+            is_vape_context = any(
+                kw in s or kw in c
+                for kw in ["vape", "vap", "cart", "cartridge", "pen", "pod", "disposable"]
+            )
+            if is_vape_context:
+                half = re.search(r"\b0\.5\b|\b\.5\b", s)
+                if half:
+                    return "0.5g"
+
             return "unspecified"
 
         inv_df["strain_type"] = inv_df.apply(
             lambda row: extract_strain_type(row["itemname"], row["subcategory"]),
             axis=1,
         )
-        inv_df["packagesize"] = inv_df["itemname"].apply(extract_size)
+        inv_df["packagesize"] = inv_df.apply(
+            lambda row: extract_size(row["itemname"], row["subcategory"]), axis=1
+        )
         inv_df["subcat_group"] = inv_df["subcategory"] + " – " + inv_df["packagesize"]
 
         inv_df = inv_df[
