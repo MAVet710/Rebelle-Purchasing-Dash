@@ -171,9 +171,19 @@ if inv_file and product_sales_file:
             inv_df["subcategory"].astype(str).str.strip().str.lower()
         )
 
-        # --- STRAIN TYPE FROM NAME (HYBRID / SATIVA / INDICA / CBD) ---
-        def extract_strain_type(name: str) -> str:
+        # --- STRAIN TYPE FROM NAME (HYBRID / SATIVA / INDICA / CBD / DISPOSABLE) ---
+        def extract_strain_type(name: str, subcat: str) -> str:
             s = str(name).lower()
+            c = str(subcat).lower()
+
+            # Try to detect disposables specifically in vape-related items
+            is_vape_context = any(
+                kw in s or kw in c
+                for kw in ["vape", "vap", "cart", "cartridge", "pen", "pod"]
+            )
+            if ("disposable" in s or "dispos" in s) and is_vape_context:
+                return "disposable"
+
             if "indica" in s:
                 return "indica"
             if "sativa" in s:
@@ -195,7 +205,10 @@ if inv_file and product_sales_file:
                 return g.group(1)
             return "unspecified"
 
-        inv_df["strain_type"] = inv_df["itemname"].apply(extract_strain_type)
+        inv_df["strain_type"] = inv_df.apply(
+            lambda row: extract_strain_type(row["itemname"], row["subcategory"]),
+            axis=1,
+        )
         inv_df["packagesize"] = inv_df["itemname"].apply(extract_size)
         inv_df["subcat_group"] = inv_df["subcategory"] + " – " + inv_df["packagesize"]
 
