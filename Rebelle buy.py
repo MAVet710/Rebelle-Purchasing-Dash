@@ -171,7 +171,7 @@ if inv_file and product_sales_file:
             inv_df["subcategory"].astype(str).str.strip().str.lower()
         )
 
-        # --- NEW: STRAIN TYPE FROM NAME (HYBRID / SATIVA / INDICA / CBD) ---
+        # --- STRAIN TYPE FROM NAME (HYBRID / SATIVA / INDICA / CBD) ---
         def extract_strain_type(name: str) -> str:
             s = str(name).lower()
             if "indica" in s:
@@ -230,7 +230,6 @@ if inv_file and product_sales_file:
         # ----------------------------
         # Aggregate + velocity
         # ----------------------------
-        # Include strain_type in inventory_summary so you can see it in the joined detail
         inventory_summary = (
             inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"]
             .sum()
@@ -349,14 +348,25 @@ if inv_file and product_sales_file:
             detail_view = detail_view[detail_view["reorderpriority"] == "1 – Reorder ASAP"]
 
         # =========================
-        # TABLES (MASTER CATEGORY FIRST)
+        # STYLE FUNCTION (RED IF DOH < THRESHOLD)
+        # =========================
+        def highlight_low_days(val):
+            try:
+                v = int(val)
+                if v < doh_threshold:
+                    return "color: #FF3131; font-weight: bold;"
+            except Exception:
+                pass
+            return ""
+
+        # =========================
+        # TABLES (MASTER CATEGORY FIRST, WITH STYLING)
         # =========================
         st.markdown("### 🧮 Inventory Forecast by Subcategory")
 
         for cat, group in detail_view.groupby("subcategory"):
             avg_doh = int(group["daysonhand"].mean())
             with st.expander(f"{cat.title()} – Avg DOH: {avg_doh}"):
-                # Desired column order: mastercategory first
                 preferred_cols = [
                     "mastercategory",
                     "subcategory",
@@ -370,7 +380,10 @@ if inv_file and product_sales_file:
                     "reorderpriority",
                 ]
                 display_cols = [c for c in preferred_cols if c in group.columns]
-                st.dataframe(group[display_cols], use_container_width=True)
+                styled = group[display_cols].style.applymap(
+                    highlight_low_days, subset=["daysonhand"]
+                )
+                st.dataframe(styled, use_container_width=True)
 
         # =========================
         # EXPORT
