@@ -264,6 +264,16 @@ if inv_file and product_sales_file:
             }
         )
 
+        # Ensure we have a packagesize column on sales too
+        if "packagesize" not in sales_raw.columns:
+            # Fallback: parse from product name
+            if "product" in sales_raw.columns:
+                sales_raw["packagesize"] = sales_raw["product"].apply(
+                    lambda n: extract_size(n)
+                )
+            else:
+                sales_raw["packagesize"] = "unspecified"
+
         sales_df = sales_raw[sales_raw["mastercategory"].notna()].copy()
         sales_df["mastercategory"] = (
             sales_df["mastercategory"].astype(str).str.strip().str.lower()
