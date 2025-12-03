@@ -171,6 +171,20 @@ if inv_file and product_sales_file:
             inv_df["subcategory"].astype(str).str.strip().str.lower()
         )
 
+        # --- NEW: STRAIN TYPE FROM NAME (HYBRID / SATIVA / INDICA / CBD) ---
+        def extract_strain_type(name: str) -> str:
+            s = str(name).lower()
+            if "indica" in s:
+                return "indica"
+            if "sativa" in s:
+                return "sativa"
+            if "hybrid" in s:
+                return "hybrid"
+            if "cbd" in s:
+                return "cbd"
+            return "unspecified"
+
+        # Existing: package size parsing from name
         def extract_size(name):
             name = str(name).lower()
             mg = re.search(r"(\d+\s?mg)", name)
@@ -181,11 +195,12 @@ if inv_file and product_sales_file:
                 return g.group(1)
             return "unspecified"
 
+        inv_df["strain_type"] = inv_df["itemname"].apply(extract_strain_type)
         inv_df["packagesize"] = inv_df["itemname"].apply(extract_size)
         inv_df["subcat_group"] = inv_df["subcategory"] + " – " + inv_df["packagesize"]
 
         inv_df = inv_df[
-            ["itemname", "packagesize", "subcategory", "subcat_group", "onhandunits"]
+            ["itemname", "strain_type", "packagesize", "subcategory", "subcat_group", "onhandunits"]
         ]
 
         # ----------------------------
@@ -215,8 +230,9 @@ if inv_file and product_sales_file:
         # ----------------------------
         # Aggregate + velocity
         # ----------------------------
+        # Include strain_type in inventory_summary so you can see it in the joined detail
         inventory_summary = (
-            inv_df.groupby(["subcategory", "packagesize"])["onhandunits"]
+            inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"]
             .sum()
             .reset_index()
         )
@@ -260,10 +276,9 @@ if inv_file and product_sales_file:
         detail["reorderpriority"] = detail.apply(reorder_tag, axis=1)
 
         # =========================
-        # CATEGORY FILTER (NEW)
+        # CATEGORY FILTER
         # =========================
         all_cats = sorted(detail["subcategory"].unique())
-        # Default: hide anything with "accessor" in the name if present
         default_cats = [c for c in all_cats if "accessor" not in c]
         if not default_cats:
             default_cats = all_cats
@@ -281,7 +296,6 @@ if inv_file and product_sales_file:
             detail = detail[detail["subcategory"].isin(selected_cats)]
             sales_for_metrics = sales_df[sales_df["mastercategory"].isin(selected_cats)]
         else:
-            # If user de-selects all, keep everything to avoid empty state confusion
             sales_for_metrics = sales_df.copy()
 
         # =========================
@@ -335,14 +349,28 @@ if inv_file and product_sales_file:
             detail_view = detail_view[detail_view["reorderpriority"] == "1 – Reorder ASAP"]
 
         # =========================
-        # TABLES
+        # TABLES (MASTER CATEGORY FIRST)
         # =========================
         st.markdown("### 🧮 Inventory Forecast by Subcategory")
 
         for cat, group in detail_view.groupby("subcategory"):
             avg_doh = int(group["daysonhand"].mean())
             with st.expander(f"{cat.title()} – Avg DOH: {avg_doh}"):
-                st.dataframe(group, use_container_width=True)
+                # Desired column order: mastercategory first
+                preferred_cols = [
+                    "mastercategory",
+                    "subcategory",
+                    "strain_type",
+                    "packagesize",
+                    "onhandunits",
+                    "unitssold",
+                    "avgunitsperday",
+                    "daysonhand",
+                    "reorderqty",
+                    "reorderpriority",
+                ]
+                display_cols = [c for c in preferred_cols if c in group.columns]
+                st.dataframe(group[display_cols], use_container_width=True)
 
         # =========================
         # EXPORT
