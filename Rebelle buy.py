@@ -171,7 +171,8 @@ if inv_file and product_sales_file:
             inv_df["subcategory"].astype(str).str.strip().str.lower()
         )
 
-        # --- STRAIN TYPE FROM NAME & CONTEXT (HYBRID / SATIVA / INDICA / CBD / DISPOSABLE / INFUSED) ---
+        # --- STRAIN TYPE FROM NAME & CONTEXT ---
+        # (HYBRID / SATIVA / INDICA / CBD / DISPOSABLE / INFUSED)
         def extract_strain_type(name: str, subcat: str) -> str:
             s = str(name).lower()
             c = str(subcat).lower()
@@ -208,9 +209,9 @@ if inv_file and product_sales_file:
             return base_type
 
         # --- PACKAGE SIZE PARSER (mg, g, PLUS .5 / 0.5 VAPE LOGIC) ---
-        def extract_size(name, subcat=None):
-            s = str(name).lower()
-            c = str(subcat).lower() if subcat is not None else s
+        def extract_size(text, context=None):
+            s = str(text).lower()
+            c = str(context).lower() if context is not None else s
 
             # mg patterns (e.g. 10mg, 5.5 mg)
             mg = re.search(r"(\d+(\.\d+)?\s?mg)", s)
@@ -234,6 +235,7 @@ if inv_file and product_sales_file:
 
             return "unspecified"
 
+        # Inventory fields
         inv_df["strain_type"] = inv_df.apply(
             lambda row: extract_strain_type(row["itemname"], row["subcategory"]),
             axis=1,
@@ -260,24 +262,27 @@ if inv_file and product_sales_file:
             columns={
                 "product": "product",
                 "quantity sold": "unitssold",
-                "weight": "packagesize",
+                # ignore weight as size source; we'll parse from product text
             }
         )
-
-        # Ensure we have a packagesize column on sales too
-        if "packagesize" not in sales_raw.columns:
-            # Fallback: parse from product name
-            if "product" in sales_raw.columns:
-                sales_raw["packagesize"] = sales_raw["product"].apply(
-                    lambda n: extract_size(n)
-                )
-            else:
-                sales_raw["packagesize"] = "unspecified"
 
         sales_df = sales_raw[sales_raw["mastercategory"].notna()].copy()
         sales_df["mastercategory"] = (
             sales_df["mastercategory"].astype(str).str.strip().str.lower()
         )
+
+        # Normalize size on sales using product text, just like inventory
+        sales_df["packagesize"] = sales_df.apply(
+            lambda row: extract_size(row["product"], row["mastercategory"]),
+            axis=1,
+        )
+
+        # Force unitssold numeric
+        sales_df["unitssold"] = pd.to_numeric(
+            sales_df.get("unitssold", 0), errors="coerce"
+        ).fillna(0)
+
+        # Drop accessories and "all" aggregate rows
         sales_df = sales_df[~sales_df["mastercategory"].str.contains("accessor")]
         sales_df = sales_df[sales_df["mastercategory"] != "all"]
 
@@ -307,13 +312,21 @@ if inv_file and product_sales_file:
             left_on=["subcategory", "packagesize"],
             right_on=["mastercategory", "packagesize"],
             how="left",
+        )
+
+        # Fill numeric nulls *after* merge
+        detail["unitssold"] = pd.to_numeric(detail.get("unitssold", 0), errors="coerce").fillna(0)
+        detail["avgunitsperday"] = pd.to_numeric(
+            detail.get("avgunitsperday", 0), errors="coerce"
         ).fillna(0)
 
         detail["daysonhand"] = np.where(
             detail["avgunitsperday"] > 0,
             detail["onhandunits"] / detail["avgunitsperday"],
-            0,
-        ).astype(int)
+            np.nan,
+        )
+        detail["daysonhand"] = detail["daysonhand"].replace([np.inf, -np.inf], np.nan).fillna(0)
+        detail["daysonhand"] = detail["daysonhand"].astype(int)
 
         detail["reorderqty"] = np.where(
             detail["daysonhand"] < doh_threshold,
