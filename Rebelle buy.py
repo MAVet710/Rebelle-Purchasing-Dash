@@ -171,28 +171,41 @@ if inv_file and product_sales_file:
             inv_df["subcategory"].astype(str).str.strip().str.lower()
         )
 
-        # --- STRAIN TYPE FROM NAME (HYBRID / SATIVA / INDICA / CBD / DISPOSABLE) ---
+        # --- STRAIN TYPE FROM NAME & CONTEXT (HYBRID / SATIVA / INDICA / CBD / DISPOSABLE / INFUSED) ---
         def extract_strain_type(name: str, subcat: str) -> str:
             s = str(name).lower()
             c = str(subcat).lower()
 
-            # Try to detect disposables specifically in vape-related items
+            # Context flags
             is_vape_context = any(
                 kw in s or kw in c
                 for kw in ["vape", "vap", "cart", "cartridge", "pen", "pod"]
             )
-            if ("disposable" in s or "dispos" in s) and is_vape_context:
-                return "disposable"
+            is_preroll_context = any(
+                kw in s or kw in c
+                for kw in ["pre roll", "preroll", "pre-roll", "joint", "cone"]
+            )
 
+            # Base strain type
+            base_type = "unspecified"
             if "indica" in s:
-                return "indica"
-            if "sativa" in s:
-                return "sativa"
-            if "hybrid" in s:
-                return "hybrid"
-            if "cbd" in s:
-                return "cbd"
-            return "unspecified"
+                base_type = "indica"
+            elif "sativa" in s:
+                base_type = "sativa"
+            elif "hybrid" in s:
+                base_type = "hybrid"
+            elif "cbd" in s:
+                base_type = "cbd"
+
+            # Disposables in vapes
+            if ("disposable" in s or "dispos" in s) and is_vape_context:
+                return f"{base_type} disposable" if base_type != "unspecified" else "disposable"
+
+            # Infused pre-rolls
+            if "infused" in s and is_preroll_context:
+                return f"{base_type} infused" if base_type != "unspecified" else "infused"
+
+            return base_type
 
         # Existing: package size parsing from name
         def extract_size(name):
