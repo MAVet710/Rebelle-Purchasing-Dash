@@ -46,7 +46,7 @@ background_url = (
 )
 
 # =========================
-# GLOBAL STYLING WITH PO LABEL FIX
+# GLOBAL STYLING
 # =========================
 st.markdown(
     f"""
@@ -86,35 +86,20 @@ st.markdown(
         opacity: 0.8;
     }}
 
-    /* Make all labels readable on dark background */
-    .stTextInput label,
-    .stNumberInput label,
-    .stDateInput label,
-    .stTextArea label,
-    .stSelectbox label,
-    .stRadio label,
-    label {{
-        color: white !important;
-        font-weight: 600 !important;
-    }}
-
-    .stTextInput input,
-    .stNumberInput input,
-    .stDateInput input,
-    .stTextArea textarea {{
-        color: white !important;
-    }}
-
-    ::placeholder {{
-        color: rgba(200,200,200,0.65) !important;
-    }}
-
     .footer {{
         text-align: center;
         font-size: 0.75rem;
         opacity: 0.7;
         margin-top: 2rem;
         color: white !important;
+    }}
+
+    /* PO-only labels: these are the words above each PO box */
+    .po-label {{
+        color: white !important;
+        font-weight: 600;
+        font-size: 0.9rem;
+        margin-bottom: 0.1rem;
     }}
     </style>
     """,
@@ -149,7 +134,6 @@ def generate_po_pdf(
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
 
-    # Margins
     left_margin = 0.7 * inch
     right_margin = width - 0.7 * inch
     top_margin = height - 0.75 * inch
@@ -209,7 +193,7 @@ def generate_po_pdf(
     y = min(y, vend_y) - 0.15 * inch
     if terms:
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(left_margin, y, f"Payment Terms: ")
+        c.drawString(left_margin, y, "Payment Terms:")
         c.setFont("Helvetica", 10)
         c.drawString(left_margin + 90, y, terms)
         y -= 0.25 * inch
@@ -272,7 +256,6 @@ def generate_po_pdf(
     # Table rows
     for idx, row in po_df.reset_index(drop=True).iterrows():
         if y < 1.2 * inch:
-            # New page for more lines
             c.showPage()
             width, height = letter
             left_margin = 0.7 * inch
@@ -306,7 +289,7 @@ def generate_po_pdf(
         c.drawRightString(col_x["total"] + 0.8 * inch, y, f"${row.get('Line Total', 0):,.2f}")
         y -= 0.18 * inch
 
-    # Totals section
+    # Totals
     if y < 1.8 * inch:
         c.showPage()
         width, height = letter
@@ -394,10 +377,8 @@ if section == "📊 Inventory Dashboard":
                 elif "sativa" in s: base = "sativa"
                 elif "hybrid" in s: base = "hybrid"
                 elif "cbd" in s: base = "cbd"
-
                 vape = any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"])
                 preroll = any(k in s for k in ["pre roll", "preroll", "joint"])
-
                 if ("disposable" in s or "dispos" in s) and vape:
                     return base + " disposable" if base != "unspecified" else "disposable"
                 if "infused" in s and preroll:
@@ -407,16 +388,23 @@ if section == "📊 Inventory Dashboard":
             def extract_size(text, context=None):
                 s = str(text).lower()
                 mg = re.search(r"(\d+(\.\d+)?\s?mg)", s)
-                if mg: return mg.group(1).replace(" ", "")
+                if mg:
+                    return mg.group(1).replace(" ", "")
                 g = re.search(r"((?:\d+\.?\d*|\.\d+)\s?g)", s)
-                if g: return g.group(1).replace(" ", "")
+                if g:
+                    return g.group(1).replace(" ", "")
                 if any(k in s for k in ["vape", "cart", "pen", "pod"]):
                     half = re.search(r"\b0\.5\b|\b\.5\b", s)
-                    if half: return "0.5g"
+                    if half:
+                        return "0.5g"
                 return "unspecified"
 
-            inv_df["strain_type"] = inv_df.apply(lambda x: extract_strain_type(x["itemname"], x["subcategory"]), axis=1)
-            inv_df["packagesize"] = inv_df.apply(lambda x: extract_size(x["itemname"], x["subcategory"]), axis=1)
+            inv_df["strain_type"] = inv_df.apply(
+                lambda x: extract_strain_type(x["itemname"], x["subcategory"]), axis=1
+            )
+            inv_df["packagesize"] = inv_df.apply(
+                lambda x: extract_size(x["itemname"], x["subcategory"]), axis=1
+            )
 
             sales_raw = pd.read_excel(product_sales_file)
             sales_raw.columns = sales_raw.columns.astype(str).str.lower()
@@ -483,9 +471,12 @@ if section == "📊 Inventory Dashboard":
             ).astype(int)
 
             def tag(row):
-                if row["daysonhand"] <= 7: return "1 – Reorder ASAP"
-                if row["daysonhand"] <= 21: return "2 – Watch Closely"
-                if row["avgunitsperday"] == 0: return "4 – Dead Item"
+                if row["daysonhand"] <= 7:
+                    return "1 – Reorder ASAP"
+                if row["daysonhand"] <= 21:
+                    return "2 – Watch Closely"
+                if row["avgunitsperday"] == 0:
+                    return "4 – Dead Item"
                 return "3 – Comfortable Cover"
 
             detail["reorderpriority"] = detail.apply(tag, axis=1)
@@ -510,7 +501,10 @@ if section == "📊 Inventory Dashboard":
 
             for cat, group in detail.groupby("subcategory"):
                 with st.expander(cat.title()):
-                    st.dataframe(group.style.applymap(red_low, subset=["daysonhand"]), use_container_width=True)
+                    st.dataframe(
+                        group.style.applymap(red_low, subset=["daysonhand"]),
+                        use_container_width=True,
+                    )
 
         except Exception as e:
             st.error(f"Error: {e}")
@@ -519,13 +513,13 @@ if section == "📊 Inventory Dashboard":
         st.info("Upload inventory + product sales files to continue.")
 
 # ============================================================
-# PAGE 2 – PO BUILDER (WITH PDF EXPORT)
+# PAGE 2 – PO BUILDER (WITH PO-ONLY WHITE LABELS)
 # ============================================================
 else:
     st.subheader("🧾 Purchase Order Builder")
 
     st.markdown(
-        "Build a professional PO and export it as a **PDF** formatted like a vendor order."
+        "The **words above each PO field** are now white (PO-only), without changing other page colors."
     )
 
     # -------------------------
@@ -536,22 +530,45 @@ else:
     col1, col2 = st.columns(2)
 
     with col1:
-        store_name = st.text_input("Store / Ship-To Name", value="Rebelle Cannabis")
-        store_number = st.text_input("Store #", "")
-        store_address = st.text_input("Store Address", "")
-        store_phone = st.text_input("Store Phone", "")
-        store_contact = st.text_input("Buyer / Contact Name", "")
+        st.markdown('<div class="po-label">Store / Ship-To Name</div>', unsafe_allow_html=True)
+        store_name = st.text_input("", value="Rebelle Cannabis", key="store_name")
+
+        st.markdown('<div class="po-label">Store #</div>', unsafe_allow_html=True)
+        store_number = st.text_input("", key="store_number")
+
+        st.markdown('<div class="po-label">Store Address</div>', unsafe_allow_html=True)
+        store_address = st.text_input("", key="store_address")
+
+        st.markdown('<div class="po-label">Store Phone</div>', unsafe_allow_html=True)
+        store_phone = st.text_input("", key="store_phone")
+
+        st.markdown('<div class="po-label">Buyer / Contact Name</div>', unsafe_allow_html=True)
+        store_contact = st.text_input("", key="store_contact")
 
     with col2:
-        vendor_name = st.text_input("Vendor Name", "")
-        vendor_license = st.text_input("Vendor License Number", "")
-        vendor_address = st.text_input("Vendor Address", "")
-        vendor_contact = st.text_input("Vendor Contact / Email", "")
-        po_number = st.text_input("PO Number", "")
-        po_date = st.date_input("PO Date", datetime.today())
-        terms = st.text_input("Payment Terms", "Net 30")
+        st.markdown('<div class="po-label">Vendor Name</div>', unsafe_allow_html=True)
+        vendor_name = st.text_input("", key="vendor_name")
 
-    notes = st.text_area("PO Notes / Special Instructions", "", height=70)
+        st.markdown('<div class="po-label">Vendor License Number</div>', unsafe_allow_html=True)
+        vendor_license = st.text_input("", key="vendor_license")
+
+        st.markdown('<div class="po-label">Vendor Address</div>', unsafe_allow_html=True)
+        vendor_address = st.text_input("", key="vendor_address")
+
+        st.markdown('<div class="po-label">Vendor Contact / Email</div>', unsafe_allow_html=True)
+        vendor_contact = st.text_input("", key="vendor_contact")
+
+        st.markdown('<div class="po-label">PO Number</div>', unsafe_allow_html=True)
+        po_number = st.text_input("", key="po_number")
+
+        st.markdown('<div class="po-label">PO Date</div>', unsafe_allow_html=True)
+        po_date = st.date_input("", datetime.today(), key="po_date")
+
+        st.markdown('<div class="po-label">Payment Terms</div>', unsafe_allow_html=True)
+        terms = st.text_input("", value="Net 30", key="terms")
+
+    st.markdown('<div class="po-label">PO Notes / Special Instructions</div>', unsafe_allow_html=True)
+    notes = st.text_area("", "", height=70, key="notes")
 
     st.markdown("---")
 
@@ -567,12 +584,29 @@ else:
         with st.expander(f"Line {i + 1}", expanded=(i < 3)):
             c1, c2, c3, c4, c5, c6 = st.columns([1.2, 2.5, 1.4, 1.2, 1.2, 1.3])
 
-            sku = c1.text_input("SKU ID", key=f"sku_{i}")
-            desc = c2.text_input("SKU Name / Description", key=f"desc_{i}")
-            strain = c3.text_input("Strain / Type", key=f"strain_{i}")
-            size = c4.text_input("Size (e.g. 3.5g)", key=f"size_{i}")
-            qty = c5.number_input("Qty", min_value=0, step=1, key=f"qty_{i}")
-            price = c6.number_input("Unit Price ($)", min_value=0.0, step=0.01, key=f"price_{i}")
+            with c1:
+                st.markdown('<div class="po-label">SKU ID</div>', unsafe_allow_html=True)
+                sku = st.text_input("", key=f"sku_{i}")
+
+            with c2:
+                st.markdown('<div class="po-label">SKU Name / Description</div>', unsafe_allow_html=True)
+                desc = st.text_input("", key=f"desc_{i}")
+
+            with c3:
+                st.markdown('<div class="po-label">Strain / Type</div>', unsafe_allow_html=True)
+                strain = st.text_input("", key=f"strain_{i}")
+
+            with c4:
+                st.markdown('<div class="po-label">Size (e.g. 3.5g)</div>', unsafe_allow_html=True)
+                size = st.text_input("", key=f"size_{i}")
+
+            with c5:
+                st.markdown('<div class="po-label">Qty</div>', unsafe_allow_html=True)
+                qty = st.number_input("", min_value=0, step=1, key=f"qty_{i}")
+
+            with c6:
+                st.markdown('<div class="po-label">Unit Price ($)</div>', unsafe_allow_html=True)
+                price = st.number_input("", min_value=0.0, step=0.01, key=f"price_{i}")
 
             line_total = qty * price
             st.markdown(f"**Line Total:** ${line_total:,.2f}")
@@ -606,9 +640,15 @@ else:
         subtotal = float(po_df["Line Total"].sum())
 
         c1, c2, c3 = st.columns(3)
-        tax_rate = c1.number_input("Tax Rate (%)", 0.0, 30.0, 0.0)
-        discount = c2.number_input("Discount ($)", 0.0, step=0.01)
-        shipping = c3.number_input("Shipping / Fees ($)", 0.0, step=0.01)
+        with c1:
+            st.markdown('<div class="po-label">Tax Rate (%)</div>', unsafe_allow_html=True)
+            tax_rate = st.number_input("", 0.0, 30.0, 0.0, key="tax_rate")
+        with c2:
+            st.markdown('<div class="po-label">Discount ($)</div>', unsafe_allow_html=True)
+            discount = st.number_input("", 0.0, step=0.01, key="discount")
+        with c3:
+            st.markdown('<div class="po-label">Shipping / Fees ($)</div>', unsafe_allow_html=True)
+            shipping = st.number_input("", 0.0, step=0.01, key="shipping")
 
         tax_amount = subtotal * (tax_rate / 100.0)
         total = subtotal + tax_amount + shipping - discount
@@ -624,7 +664,6 @@ else:
         st.markdown("### PO Review")
         st.dataframe(po_df, use_container_width=True)
 
-        # Generate PDF
         pdf_bytes = generate_po_pdf(
             store_name,
             store_number,
