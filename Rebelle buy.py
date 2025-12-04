@@ -28,7 +28,7 @@ APP_TAGLINE = "Streamlined purchasing visibility powered by Dutchie data."
 LICENSE_FOOTER = f"Licensed exclusively to {CLIENT_NAME} • Powered by MAVet710 Analytics"
 
 # 🔐 TRIAL SETTINGS
-TRIAL_KEY = "rebelle24"        # <-- Rebelle 24-hour trial key
+TRIAL_KEY = "rebelle24"        # Rebelle 24-hour trial key
 TRIAL_DURATION_HOURS = 24
 
 # 👑 ADMIN CREDS
@@ -64,23 +64,24 @@ st.markdown(
         background-size: cover;
         background-position: center;
         background-attachment: fixed;
-        color: white;
     }}
 
+    /* Main content area */
     .block-container {{
         background-color: rgba(0, 0, 0, 0.80);
         padding: 2rem;
         border-radius: 12px;
-        color: white !important;
+        color: #ffffff !important;
     }}
 
+    /* Keep tables readable on dark background */
     .dataframe td {{
-        color: white !important;
+        color: #ffffff !important;
     }}
 
     .stButton>button {{
         background-color: rgba(255, 255, 255, 0.08);
-        color: white;
+        color: #ffffff;
         border: 1px solid rgba(255, 255, 255, 0.8);
         border-radius: 6px;
     }}
@@ -99,12 +100,20 @@ st.markdown(
         font-size: 0.75rem;
         opacity: 0.7;
         margin-top: 2rem;
-        color: white !important;
+        color: #ffffff !important;
     }}
 
-    /* PO-only labels: these are the words above each PO box */
+    /* Sidebar: force dark text on light gray background for readability */
+    [data-testid="stSidebar"] {{
+        background-color: #f5f5f5 !important;
+    }}
+    [data-testid="stSidebar"] * {{
+        color: #111111 !important;
+    }}
+
+    /* PO-only labels: words above each PO box in main content */
     .po-label {{
-        color: white !important;
+        color: #ffffff !important;
         font-weight: 600;
         font-size: 0.9rem;
         margin-bottom: 0.1rem;
@@ -361,7 +370,9 @@ if not st.session_state.is_admin:
     st.sidebar.markdown("### 🔐 Trial Access")
 
     if st.session_state.trial_start is None:
-        trial_key_input = st.sidebar.text_input("Enter trial key", type="password", key="trial_key_input")
+        trial_key_input = st.sidebar.text_input(
+            "Enter trial key", type="password", key="trial_key_input"
+        )
         if st.sidebar.button("Activate Trial", key="activate_trial"):
             if trial_key_input.strip() == TRIAL_KEY:
                 st.session_state.trial_start = trial_now.isoformat()
@@ -594,7 +605,7 @@ else:
     st.subheader("🧾 Purchase Order Builder")
 
     st.markdown(
-        "The **words above each PO field** are white (PO-only), without messing with the rest of the UI."
+        "The words above each PO field are white on the dark background for clarity."
     )
 
     # -------------------------
@@ -781,4 +792,3 @@ st.markdown(
     f'<div class="footer">{LICENSE_FOOTER} • © {year}</div>',
     unsafe_allow_html=True,
 )
-
