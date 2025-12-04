@@ -298,3 +298,509 @@ if section == "📊 Inventory Dashboard":
             # Sales load & normalize
             # ----------------------------
             sales_raw = pd.read_excel(product_sales_file)
+            sales_raw.columns = (
+                sales_raw.columns.astype(str).str.strip().str.lower()
+            )
+
+            # Ensure we have a mastercategory
+            if "mastercategory" not in sales_raw.columns:
+                if "category" in sales_raw.columns:
+                    sales_raw = sales_raw.rename(
+                        columns={"category": "mastercategory"}
+                    )
+                else:
+                    st.error(
+                        "Product Sales Report is missing a 'mastercategory' or 'category' column."
+                    )
+                    st.stop()
+
+            # Detect product name column
+            product_col_candidates = [
+                "product",
+                "product name",
+                "productname",
+                "item",
+                "item name",
+                "itemname",
+                "name",
+            ]
+            name_col = None
+            for c in product_col_candidates:
+                if c in sales_raw.columns:
+                    name_col = c
+                    break
+
+            if name_col is None:
+                st.error(
+                    "Could not find a product name column in the Product Sales Report. "
+                    "Expected one of: product, product name, item, item name, name."
+                )
+                st.stop()
+
+            sales_raw["product_name"] = sales_raw[name_col].astype(str)
+
+            # Detect / create unitssold
+            if "unitssold" not in sales_raw.columns:
+                qty_candidates = [
+                    "quantity sold",
+                    "qty sold",
+                    "units sold",
+                    "units",
+                ]
+                qty_col = None
+                for c in qty_candidates:
+                    if c in sales_raw.columns:
+                        qty_col = c
+                        break
+
+                if qty_col is not None:
+                    sales_raw["unitssold"] = sales_raw[qty_col]
+                else:
+                    st.warning(
+                        "No 'quantity sold' style column found; setting unitssold to 0 for all rows."
+                    )
+                    sales_raw["unitssold"] = 0
+
+            sales_df = sales_raw[sales_raw["mastercategory"].notna()].copy()
+            sales_df["mastercategory"] = (
+                sales_df["mastercategory"].astype(str).str.strip().str.lower()
+            )
+
+            # Normalize size on sales using product_name text, just like inventory
+            sales_df["packagesize"] = sales_df.apply(
+                lambda row: extract_size(row["product_name"], row["mastercategory"]),
+                axis=1,
+            )
+
+            # Force unitssold numeric
+            sales_df["unitssold"] = pd.to_numeric(
+                sales_df.get("unitssold", 0), errors="coerce"
+            ).fillna(0)
+
+            # Drop accessories and "all" aggregate rows
+            sales_df = sales_df[
+                ~sales_df["mastercategory"].str.contains("accessor")
+            ]
+            sales_df = sales_df[sales_df["mastercategory"] != "all"]
+
+            # ----------------------------
+            # Aggregate + velocity
+            #   → sales grouped by mastercategory + packagesize
+            #   → merge on subcategory + packagesize so detail rows aren't duplicated
+            # ----------------------------
+            inventory_summary = (
+                inv_df.groupby(
+                    ["subcategory", "strain_type", "packagesize"]
+                )["onhandunits"]
+                .sum()
+                .reset_index()
+            )
+
+            agg = (
+                sales_df.groupby(["mastercategory", "packagesize"])
+                .agg({"unitssold": "sum"})
+                .reset_index()
+            )
+            agg["avgunitsperday"] = (
+                agg["unitssold"].astype(float) / date_diff * velocity_adjustment
+            )
+
+            detail = pd.merge(
+                inventory_summary,
+                agg,
+                left_on=["subcategory", "packagesize"],
+                right_on=["mastercategory", "packagesize"],
+                how="left",
+            )
+
+            # Fill numeric nulls *after* merge
+            detail["unitssold"] = pd.to_numeric(
+                detail.get("unitssold", 0), errors="coerce"
+            ).fillna(0)
+            detail["avgunitsperday"] = pd.to_numeric(
+                detail.get("avgunitsperday", 0), errors="coerce"
+            ).fillna(0)
+
+            detail["daysonhand"] = np.where(
+                detail["avgunitsperday"] > 0,
+                detail["onhandunits"] / detail["avgunitsperday"],
+                np.nan,
+            )
+            detail["daysonhand"] = (
+                detail["daysonhand"]
+                .replace([np.inf, -np.inf], np.nan)
+                .fillna(0)
+            )
+            detail["daysonhand"] = detail["daysonhand"].astype(int)
+
+            detail["reorderqty"] = np.where(
+                detail["daysonhand"] < doh_threshold,
+                np.ceil(
+                    (doh_threshold - detail["daysonhand"])
+                    * detail["avgunitsperday"]
+                ).astype(int),
+                0,
+            )
+
+            def reorder_tag(row):
+                if row["daysonhand"] <= 7:
+                    return "1 – Reorder ASAP"
+                if row["daysonhand"] <= 21:
+                    return "2 – Watch Closely"
+                if row["avgunitsperday"] == 0:
+                    return "4 – Dead Item"
+                return "3 – Comfortable Cover"
+
+            detail["reorderpriority"] = detail.apply(reorder_tag, axis=1)
+
+            # =========================
+            # CATEGORY FILTER
+            # =========================
+            all_cats = sorted(detail["subcategory"].unique())
+            default_cats = [c for c in all_cats if "accessor" not in c]
+            if not default_cats:
+                default_cats = all_cats
+
+            st.sidebar.markdown("---")
+            st.sidebar.header("🔎 Category Filter")
+            selected_cats = st.sidebar.multiselect(
+                "Visible Product Categories",
+                options=all_cats,
+                default=default_cats,
+                help="Toggle which categories appear in the metrics, tables, and chart.",
+            )
+
+            if selected_cats:
+                detail = detail[detail["subcategory"].isin(selected_cats)]
+                sales_for_metrics = sales_df[
+                    sales_df["mastercategory"].isin(selected_cats)
+                ]
+            else:
+                sales_for_metrics = sales_df.copy()
+
+            # =========================
+            # METRICS
+            # =========================
+            total_units = int(sales_for_metrics["unitssold"].sum())
+            active_categories = detail["subcategory"].nunique()
+            reorder_asap = (
+                detail["reorderpriority"] == "1 – Reorder ASAP"
+            ).sum()
+            watchlist_items = (
+                detail["reorderpriority"] == "2 – Watch Closely"
+            ).sum()
+
+            st.markdown("### 📊 Portfolio Snapshot")
+
+            c1, c2, c3, c4 = st.columns(4)
+            if c1.button(f"Total Units Sold: {total_units:,}"):
+                st.session_state.metric_filter = "None"
+            c1.markdown(
+                '<span class="metric-label">Across selected period (filtered categories)</span>',
+                unsafe_allow_html=True,
+            )
+
+            if c2.button(f"Active Subcategories: {active_categories}"):
+                st.session_state.metric_filter = "None"
+            c2.markdown(
+                '<span class="metric-label">Visible subcategory groups</span>',
+                unsafe_allow_html=True,
+            )
+
+            if c3.button(f"Watchlist Items: {watchlist_items}"):
+                st.session_state.metric_filter = "Watchlist"
+            c3.markdown(
+                '<span class="metric-label">Approaching DOH threshold</span>',
+                unsafe_allow_html=True,
+            )
+
+            if c4.button(f"Reorder ASAP: {reorder_asap}"):
+                st.session_state.metric_filter = "Reorder ASAP"
+            c4.markdown(
+                '<span class="metric-label">Critically low coverage</span>',
+                unsafe_allow_html=True,
+            )
+
+            st.markdown("---")
+
+            # =========================
+            # FILTERED VIEW FOR PRIORITY BUTTONS
+            # =========================
+            detail_view = detail.copy()
+            if st.session_state.metric_filter == "Watchlist":
+                detail_view = detail_view[
+                    detail_view["reorderpriority"] == "2 – Watch Closely"
+                ]
+            elif st.session_state.metric_filter == "Reorder ASAP":
+                detail_view = detail_view[
+                    detail_view["reorderpriority"] == "1 – Reorder ASAP"
+                ]
+
+            # =========================
+            # STYLE FUNCTION (RED IF DOH < THRESHOLD)
+            # =========================
+            def highlight_low_days(val):
+                try:
+                    v = int(val)
+                    if v < doh_threshold:
+                        return "color: #FF3131; font-weight: bold;"
+                except Exception:
+                    pass
+                return ""
+
+            # =========================
+            # TABLES (MASTER CATEGORY FIRST, WITH STYLING)
+            # =========================
+            st.markdown("### 🧮 Inventory Forecast by Subcategory")
+
+            for cat, group in detail_view.groupby("subcategory"):
+                avg_doh = int(group["daysonhand"].mean()) if len(group) > 0 else 0
+                with st.expander(f"{cat.title()} – Avg DOH: {avg_doh}"):
+                    preferred_cols = [
+                        "mastercategory",
+                        "subcategory",
+                        "strain_type",
+                        "packagesize",
+                        "onhandunits",
+                        "unitssold",
+                        "avgunitsperday",
+                        "daysonhand",
+                        "reorderqty",
+                        "reorderpriority",
+                    ]
+                    display_cols = [
+                        c for c in preferred_cols if c in group.columns
+                    ]
+                    styled = group[display_cols].style.applymap(
+                        highlight_low_days, subset=["daysonhand"]
+                    )
+                    st.dataframe(styled, use_container_width=True)
+
+            # =========================
+            # EXPORT
+            # =========================
+            csv = detail.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "📥 Download CSV",
+                csv,
+                "rebelle_forecast.csv",
+                "text/csv",
+            )
+
+            # =========================
+            # CHART
+            # =========================
+            st.markdown("### 📈 Coverage by Priority")
+
+            priority_summary = (
+                detail.groupby("reorderpriority")["subcategory"]
+                .count()
+                .reset_index()
+                .rename(columns={"subcategory": "itemcount"})
+            )
+
+            if PLOTLY_AVAILABLE:
+                fig = px.bar(
+                    priority_summary,
+                    x="reorderpriority",
+                    y="itemcount",
+                    title="Item Count by Reorder Priority (Filtered Categories)",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info(
+                    "Plotly not installed. Add `plotly` to requirements.txt to enable charts."
+                )
+                st.dataframe(priority_summary, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Error processing files: {e}")
+
+    else:
+        st.info("Please upload both an Inventory CSV and Product Sales Report.")
+
+# ============================================================
+# PAGE 2 – PO BUILDER
+# ============================================================
+else:
+    st.subheader("🧾 Purchase Order Builder")
+
+    st.markdown(
+        "Build a **vendor PO** with auto-calculated line totals and a downloadable CSV."
+    )
+
+    # -------------------------
+    # HEADER INFO
+    # -------------------------
+    col_h1, col_h2 = st.columns(2)
+
+    with col_h1:
+        vendor_name = st.text_input("Vendor Name")
+        vendor_contact = st.text_input("Vendor Contact / Email")
+        ship_to = st.text_input("Ship To Location", value="Rebelle Cannabis")
+    with col_h2:
+        po_number = st.text_input("PO Number")
+        po_date = st.date_input("PO Date", datetime.today())
+        terms = st.text_input("Payment Terms", value="Net 30")
+
+    notes = st.text_area("PO Notes / Special Instructions", height=80)
+
+    st.markdown("---")
+
+    # -------------------------
+    # LINE ITEMS
+    # -------------------------
+    st.markdown("### Line Items")
+
+    num_lines = st.number_input(
+        "Number of Line Items",
+        min_value=1,
+        max_value=50,
+        value=5,
+        step=1,
+    )
+
+    line_items = []
+
+    for i in range(int(num_lines)):
+        with st.expander(f"Line {i + 1}", expanded=(i < 3)):
+            c1, c2, c3, c4, c5, c6 = st.columns([1.2, 2.5, 1.2, 1.2, 1.2, 1.3])
+
+            with c1:
+                sku = st.text_input("SKU", key=f"sku_{i}")
+            with c2:
+                desc = st.text_input("Description", key=f"desc_{i}")
+            with c3:
+                strain = st.text_input("Strain / Type", key=f"strain_{i}")
+            with c4:
+                size = st.text_input("Size (e.g. 1g, 0.5g)", key=f"size_{i}")
+            with c5:
+                units = st.number_input(
+                    "Units Ordered",
+                    min_value=0,
+                    value=0,
+                    step=1,
+                    key=f"units_{i}",
+                )
+            with c6:
+                cost = st.number_input(
+                    "Unit Cost",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.01,
+                    key=f"cost_{i}",
+                )
+
+            line_total = units * cost
+
+            st.markdown(
+                f"**Line Total:** ${line_total:,.2f}" if line_total > 0 else "**Line Total:** $0.00"
+            )
+
+            line_items.append(
+                {
+                    "line": i + 1,
+                    "sku": sku,
+                    "description": desc,
+                    "strain_type": strain,
+                    "size": size,
+                    "units": units,
+                    "unit_cost": cost,
+                    "line_total": line_total,
+                }
+            )
+
+    # Filter out completely empty lines
+    po_df = pd.DataFrame(line_items)
+    if not po_df.empty:
+        po_df = po_df[
+            (po_df["sku"].astype(str).str.strip() != "")
+            | (po_df["description"].astype(str).str.strip() != "")
+            | (po_df["units"] > 0)
+        ]
+
+    st.markdown("---")
+
+    # -------------------------
+    # TOTALS
+    # -------------------------
+    if not po_df.empty:
+        subtotal = float(po_df["line_total"].sum())
+
+        col_tot1, col_tot2, col_tot3 = st.columns(3)
+        with col_tot1:
+            tax_rate = st.number_input(
+                "Tax Rate (%)",
+                min_value=0.0,
+                max_value=30.0,
+                value=0.0,
+                step=0.25,
+            )
+        with col_tot2:
+            discount = st.number_input(
+                "Discount Amount ($)",
+                min_value=0.0,
+                value=0.0,
+                step=0.01,
+            )
+        with col_tot3:
+            shipping = st.number_input(
+                "Shipping / Fees ($)",
+                min_value=0.0,
+                value=0.0,
+                step=0.01,
+            )
+
+        tax_amount = subtotal * (tax_rate / 100.0)
+        total = subtotal + tax_amount + shipping - discount
+
+        st.markdown("### PO Summary")
+
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Subtotal", f"${subtotal:,.2f}")
+        s2.metric("Tax", f"${tax_amount:,.2f}")
+        s3.metric("Shipping / Fees", f"${shipping:,.2f}")
+        s4.metric("Total", f"${total:,.2f}")
+
+        st.markdown("### PO Line Item Table")
+        st.dataframe(po_df, use_container_width=True)
+
+        # -------------------------
+        # DOWNLOAD
+        # -------------------------
+        st.markdown("#### Download")
+
+        csv_po = po_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Download PO Line Items (CSV)",
+            csv_po,
+            f"PO_{po_number or 'rebelle'}.csv",
+            "text/csv",
+        )
+
+        # Optional: a simple text header summary
+        st.markdown("#### PO Header Snapshot")
+        st.code(
+            f"Vendor: {vendor_name}\n"
+            f"Contact: {vendor_contact}\n"
+            f"Ship To: {ship_to}\n"
+            f"PO Number: {po_number}\n"
+            f"PO Date: {po_date}\n"
+            f"Terms: {terms}\n"
+            f"Notes: {notes}\n"
+            f"Total: ${total:,.2f}",
+            language="text",
+        )
+
+    else:
+        st.info("Add at least one line item (SKU, description, or units) to see totals and export options.")
+
+# =========================
+# FOOTER
+# =========================
+st.markdown("---")
+year = datetime.now().year
+st.markdown(
+    f'<div class="footer">{LICENSE_FOOTER} • © {year}</div>',
+    unsafe_allow_html=True,
+)
