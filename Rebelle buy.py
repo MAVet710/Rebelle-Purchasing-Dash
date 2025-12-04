@@ -159,6 +159,44 @@ def detect_column(columns, aliases):
             return norm_map[alias]
     return None
 
+def normalize_rebelle_category(raw):
+    """Map similar names to canonical Rebelle categories."""
+    s = str(raw).lower().strip()
+
+    # Flower
+    if any(k in s for k in ["flower", "bud", "buds", "cannabis flower"]):
+        return "flower"
+
+    # Pre Rolls
+    if any(k in s for k in ["pre roll", "preroll", "pre-roll", "joint", "joints"]):
+        return "pre rolls"
+
+    # Vapes
+    if any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"]):
+        return "vapes"
+
+    # Edibles
+    if any(k in s for k in ["edible", "gummy", "chocolate", "chew", "cookies"]):
+        return "edibles"
+
+    # Beverages
+    if any(k in s for k in ["beverage", "drink", "drinkable", "shot", "beverages"]):
+        return "beverages"
+
+    # Concentrates
+    if any(k in s for k in ["concentrate", "wax", "shatter", "crumble", "resin", "rosin", "dab"]):
+        return "concentrates"
+
+    # Tinctures
+    if any(k in s for k in ["tincture", "tinctures", "drops", "sublingual", "dropper"]):
+        return "tinctures"
+
+    # Topicals
+    if any(k in s for k in ["topical", "lotion", "cream", "salve", "balm"]):
+        return "topicals"
+
+    return s  # unchanged if not matched
+
 def extract_strain_type(name, subcat):
     s = str(name).lower()
     base = "unspecified"
@@ -572,7 +610,8 @@ if section == "📊 Inventory Dashboard":
             )
 
             inv_df["onhandunits"] = pd.to_numeric(inv_df["onhandunits"], errors="coerce").fillna(0)
-            inv_df["subcategory"] = inv_df["subcategory"].astype(str).str.lower()
+            # normalize to Rebelle canonical categories
+            inv_df["subcategory"] = inv_df["subcategory"].apply(normalize_rebelle_category)
 
             # Strain Type + Package Size
             inv_df["strain_type"] = inv_df.apply(
@@ -634,11 +673,13 @@ if section == "📊 Inventory Dashboard":
             sales_raw["unitssold"] = pd.to_numeric(
                 sales_raw["unitssold"], errors="coerce"
             ).fillna(0)
-            sales_raw["mastercategory"] = sales_raw["mastercategory"].astype(str).str.lower()
 
-            # Filter out accessories / 'all'
+            # normalize categories here as well
+            sales_raw["mastercategory"] = sales_raw["mastercategory"].apply(normalize_rebelle_category)
+
+            # Filter out accessories / 'all' (anything with "accessor")
             sales_df = sales_raw[
-                ~sales_raw["mastercategory"].str.contains("accessor")
+                ~sales_raw["mastercategory"].astype(str).str.contains("accessor")
                 & (sales_raw["mastercategory"] != "all")
             ].copy()
 
