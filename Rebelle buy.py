@@ -66,11 +66,16 @@ st.markdown(
         background-attachment: fixed;
     }}
 
-    /* Main content area */
+    /* Main content area (center) */
     .block-container {{
         background-color: rgba(0, 0, 0, 0.80);
         padding: 2rem;
         border-radius: 12px;
+        color: #ffffff !important;
+    }}
+
+    /* Force almost all text in main area to white, but keep input text default */
+    .block-container *:not(input):not(textarea):not(select) {{
         color: #ffffff !important;
     }}
 
@@ -340,7 +345,6 @@ def generate_po_pdf(
 # 🔐 ADMIN + TRIAL GATE
 # =========================
 
-# init flags
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 if "trial_start" not in st.session_state:
@@ -366,7 +370,6 @@ else:
 trial_now = datetime.now()
 
 if not st.session_state.is_admin:
-    # Only enforce trial if not admin
     st.sidebar.markdown("### 🔐 Trial Access")
 
     if st.session_state.trial_start is None:
@@ -382,7 +385,6 @@ if not st.session_state.is_admin:
         st.warning("This is a trial build. Enter a valid key to unlock the app.")
         st.stop()
     else:
-        # Trial already started → check remaining time
         try:
             started_at = datetime.fromisoformat(st.session_state.trial_start)
         except Exception:
@@ -514,7 +516,6 @@ if section == "📊 Inventory Dashboard":
                     name_col = col
                     break
 
-            # If not found, let user choose from dropdown
             if name_col is None:
                 name_col = st.selectbox(
                     "Select PRODUCT NAME column from Product Sales report",
@@ -655,7 +656,7 @@ if section == "📊 Inventory Dashboard":
         st.info("Upload inventory + product sales files to continue.")
 
 # ============================================================
-# PAGE 2 – PO BUILDER (WITH PO-ONLY WHITE LABELS)
+# PAGE 2 – PO BUILDER
 # ============================================================
 else:
     st.subheader("🧾 Purchase Order Builder")
