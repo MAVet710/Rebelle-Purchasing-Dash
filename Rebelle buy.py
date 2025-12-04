@@ -385,8 +385,6 @@ if section == "📊 Inventory Dashboard":
 
             # ----------------------------
             # Aggregate + velocity
-            #   → sales grouped by mastercategory + packagesize
-            #   → merge on subcategory + packagesize so detail rows aren't duplicated
             # ----------------------------
             inventory_summary = (
                 inv_df.groupby(
@@ -626,24 +624,83 @@ else:
     st.subheader("🧾 Purchase Order Builder")
 
     st.markdown(
-        "Build a **vendor PO** with auto-calculated line totals and a downloadable CSV."
+        "Build a **vendor PO** with auto-calculated line totals and a downloadable CSV "
+        "(structured like the invoice layout you shared)."
     )
 
     # -------------------------
     # HEADER INFO
     # -------------------------
-    col_h1, col_h2 = st.columns(2)
+    st.markdown("### PO Header Details")
 
-    with col_h1:
-        vendor_name = st.text_input("Vendor Name")
-        vendor_contact = st.text_input("Vendor Contact / Email")
-        ship_to = st.text_input("Ship To Location", value="Rebelle Cannabis")
-    with col_h2:
-        po_number = st.text_input("PO Number")
-        po_date = st.date_input("PO Date", datetime.today())
-        terms = st.text_input("Payment Terms", value="Net 30")
+    col_store, col_vendor = st.columns(2)
 
-    notes = st.text_area("PO Notes / Special Instructions", height=80)
+    # Store / Ship-to block
+    with col_store:
+        store_name = st.text_input(
+            "Store / Ship-To Name",
+            value="Rebelle Cannabis",
+            placeholder="e.g. Rebelle Cannabis – Great Barrington",
+        )
+        store_number = st.text_input(
+            "Store #",
+            placeholder="e.g. MA001",
+        )
+        store_address = st.text_input(
+            "Store Address",
+            placeholder="e.g. 1 West Street, Great Barrington, MA 01230",
+        )
+        store_phone = st.text_input(
+            "Store Phone",
+            placeholder="e.g. (413) 555-1234",
+        )
+        store_contact = st.text_input(
+            "Buyer / Contact Name",
+            placeholder="e.g. Nelson DaSilva",
+        )
+
+    # Vendor block
+    with col_vendor:
+        vendor_name = st.text_input(
+            "Vendor Name",
+            placeholder="e.g. Cresco Labs",
+        )
+        vendor_license = st.text_input(
+            "Vendor License Number",
+            placeholder="e.g. MCT1425",
+        )
+        vendor_address = st.text_input(
+            "Vendor Address",
+            placeholder="e.g. 20 Example Ave, Worcester, MA 01605",
+        )
+        vendor_contact = st.text_input(
+            "Vendor Contact / Email",
+            placeholder="e.g. orders@vendor.com",
+        )
+
+    col_po1, col_po2 = st.columns(2)
+    with col_po1:
+        po_number = st.text_input(
+            "Order / PO #",
+            placeholder="e.g. 31144426",
+        )
+        vendor_order = st.text_input(
+            "Vendor Sales Order #",
+            placeholder="Optional – from vendor confirmation",
+        )
+    with col_po2:
+        po_date = st.date_input("Order Date", datetime.today())
+        terms = st.text_input(
+            "Payment Terms",
+            value="Net 30",
+            placeholder="e.g. Net 30, COD, Prepaid",
+        )
+
+    notes = st.text_area(
+        "PO Notes / Special Instructions",
+        height=80,
+        placeholder="Delivery windows, packaging requests, promo notes, etc.",
+    )
 
     st.markdown("---")
 
@@ -658,43 +715,64 @@ else:
         max_value=50,
         value=5,
         step=1,
+        help="Set how many SKU rows you want to build into this PO.",
     )
 
     line_items = []
 
     for i in range(int(num_lines)):
         with st.expander(f"Line {i + 1}", expanded=(i < 3)):
-            c1, c2, c3, c4, c5, c6 = st.columns([1.2, 2.5, 1.2, 1.2, 1.2, 1.3])
+            c1, c2, c3, c4, c5, c6 = st.columns([1.2, 2.5, 1.4, 1.2, 1.2, 1.3])
 
             with c1:
-                sku = st.text_input("SKU", key=f"sku_{i}")
+                sku = st.text_input(
+                    "SKU ID",
+                    key=f"sku_{i}",
+                    placeholder="e.g. 267570",
+                )
             with c2:
-                desc = st.text_input("Description", key=f"desc_{i}")
+                desc = st.text_input(
+                    "SKU Name / Description",
+                    key=f"desc_{i}",
+                    placeholder="e.g. Eleven Flower 3.5g – Marshmallow OG",
+                )
             with c3:
-                strain = st.text_input("Strain / Type", key=f"strain_{i}")
+                strain = st.text_input(
+                    "Strain / Type",
+                    key=f"strain_{i}",
+                    placeholder="e.g. Hybrid, Indica, CBD",
+                )
             with c4:
-                size = st.text_input("Size (e.g. 1g, 0.5g)", key=f"size_{i}")
+                size = st.text_input(
+                    "Size",
+                    key=f"size_{i}",
+                    placeholder="e.g. 3.5g, 7g, 1g pre-roll",
+                )
             with c5:
                 units = st.number_input(
-                    "Units Ordered",
+                    "Qty",
                     min_value=0,
                     value=0,
                     step=1,
                     key=f"units_{i}",
+                    help="Number of units ordered for this SKU.",
                 )
             with c6:
                 cost = st.number_input(
-                    "Unit Cost",
+                    "Unit Price ($)",
                     min_value=0.0,
                     value=0.0,
                     step=0.01,
                     key=f"cost_{i}",
+                    help="Cost per unit before discounts.",
                 )
 
             line_total = units * cost
 
             st.markdown(
-                f"**Line Total:** ${line_total:,.2f}" if line_total > 0 else "**Line Total:** $0.00"
+                f"**Line Total:** ${line_total:,.2f}"
+                if line_total > 0
+                else "**Line Total:** $0.00"
             )
 
             line_items.append(
@@ -727,7 +805,7 @@ else:
     if not po_df.empty:
         subtotal = float(po_df["line_total"].sum())
 
-        col_tot1, col_tot2, col_tot3 = st.columns(3)
+        col_tot1, col_tot2, col_tot3, col_tot4, col_tot5 = st.columns(5)
         with col_tot1:
             tax_rate = st.number_input(
                 "Tax Rate (%)",
@@ -738,10 +816,11 @@ else:
             )
         with col_tot2:
             discount = st.number_input(
-                "Discount Amount ($)",
+                "Manual Cost Discount ($)",
                 min_value=0.0,
                 value=0.0,
                 step=0.01,
+                help="Total discount applied to this PO (shown as negative).",
             )
         with col_tot3:
             shipping = st.number_input(
@@ -750,27 +829,49 @@ else:
                 value=0.0,
                 step=0.01,
             )
+        with col_tot4:
+            _ = st.empty()  # spacer
+        with col_tot5:
+            _ = st.empty()
 
         tax_amount = subtotal * (tax_rate / 100.0)
         total = subtotal + tax_amount + shipping - discount
 
         st.markdown("### PO Summary")
 
-        s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Subtotal", f"${subtotal:,.2f}")
-        s2.metric("Tax", f"${tax_amount:,.2f}")
-        s3.metric("Shipping / Fees", f"${shipping:,.2f}")
-        s4.metric("Total", f"${total:,.2f}")
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("SUBTOTAL", f"${subtotal:,.2f}")
+        s2.metric(
+            "Manual Cost Discount",
+            f"-${discount:,.2f}" if discount > 0 else "$0.00",
+        )
+        s3.metric("Tax", f"${tax_amount:,.2f}")
+        s4.metric("Shipping / Fees", f"${shipping:,.2f}")
+        s5.metric("TOTAL", f"${total:,.2f}")
 
         st.markdown("### PO Line Item Table")
-        st.dataframe(po_df, use_container_width=True)
+
+        display_df = po_df.rename(
+            columns={
+                "line": "Line",
+                "sku": "SKU ID",
+                "description": "SKU Name",
+                "strain_type": "Strain / Type",
+                "size": "Size",
+                "units": "Qty",
+                "unit_cost": "Unit Price ($)",
+                "line_total": "Line Total ($)",
+            }
+        )
+
+        st.dataframe(display_df, use_container_width=True)
 
         # -------------------------
         # DOWNLOAD
         # -------------------------
         st.markdown("#### Download")
 
-        csv_po = po_df.to_csv(index=False).encode("utf-8")
+        csv_po = display_df.to_csv(index=False).encode("utf-8")
         st.download_button(
             "📥 Download PO Line Items (CSV)",
             csv_po,
@@ -778,22 +879,30 @@ else:
             "text/csv",
         )
 
-        # Optional: a simple text header summary
+        # Optional: a simple text header summary you can paste into email / PDF
         st.markdown("#### PO Header Snapshot")
         st.code(
+            f"Store: {store_name} (Store #{store_number})\n"
+            f"Address: {store_address}\n"
+            f"Phone: {store_phone}\n"
+            f"Buyer: {store_contact}\n\n"
             f"Vendor: {vendor_name}\n"
-            f"Contact: {vendor_contact}\n"
-            f"Ship To: {ship_to}\n"
-            f"PO Number: {po_number}\n"
-            f"PO Date: {po_date}\n"
+            f"Vendor License: {vendor_license}\n"
+            f"Vendor Address: {vendor_address}\n"
+            f"Vendor Contact: {vendor_contact}\n\n"
+            f"Order / PO #: {po_number}\n"
+            f"Vendor Sales Order #: {vendor_order}\n"
+            f"Order Date: {po_date}\n"
             f"Terms: {terms}\n"
-            f"Notes: {notes}\n"
-            f"Total: ${total:,.2f}",
+            f"Notes: {notes}\n\n"
+            f"PO Total: ${total:,.2f}",
             language="text",
         )
 
     else:
-        st.info("Add at least one line item (SKU, description, or units) to see totals and export options.")
+        st.info(
+            "Add at least one line item (SKU ID, SKU Name, or Qty) to see totals and export options."
+        )
 
 # =========================
 # FOOTER
