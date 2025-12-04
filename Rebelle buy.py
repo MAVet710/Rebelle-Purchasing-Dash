@@ -35,6 +35,18 @@ TRIAL_DURATION_HOURS = 24
 ADMIN_USERNAME = "God"
 ADMIN_PASSWORD = "Major420"
 
+# ✅ Canonical Rebelle category names (values, not column names)
+REB_CATEGORIES = [
+    "flower",
+    "pre rolls",
+    "vapes",
+    "edibles",
+    "beverages",
+    "concentrates",
+    "tinctures",
+    "topicals",
+]
+
 # Tab icon (favicon)
 page_icon_url = (
     "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
@@ -501,7 +513,7 @@ section = st.sidebar.radio(
 # ============================================================
 if section == "📊 Inventory Dashboard":
 
-    # Data source selector (for future logic; right now aliases work for both)
+    # Data source selector (for future hooks)
     st.sidebar.markdown("### 🧩 Data Source")
     data_source = st.sidebar.selectbox(
         "Select POS / Data Source",
@@ -707,10 +719,21 @@ if section == "📊 Inventory Dashboard":
 
             detail["reorderpriority"] = detail.apply(tag, axis=1)
 
-            # Category filter (hide certain cats if needed)
+            # Category filter (ordered by Rebelle categories first)
             all_cats = sorted(detail["subcategory"].unique())
+
+            def cat_sort_key(c):
+                c_low = str(c).lower()
+                if c_low in REB_CATEGORIES:
+                    return (REB_CATEGORIES.index(c_low), c_low)
+                return (len(REB_CATEGORIES), c_low)
+
+            all_cats_sorted = sorted(all_cats, key=cat_sort_key)
+
             selected_cats = st.sidebar.multiselect(
-                "Visible Categories", all_cats, default=all_cats
+                "Visible Categories",
+                all_cats_sorted,
+                default=all_cats_sorted,
             )
             detail = detail[detail["subcategory"].isin(selected_cats)]
 
@@ -735,7 +758,7 @@ if section == "📊 Inventory Dashboard":
                 except Exception:
                     return ""
 
-            # Make sure cannabis type (strain_type) is visible again
+            # Make sure cannabis type (strain_type) is visible
             display_cols = [
                 "mastercategory",
                 "subcategory",
@@ -750,7 +773,9 @@ if section == "📊 Inventory Dashboard":
             ]
             display_cols = [c for c in display_cols if c in detail.columns]
 
-            for cat, group in detail.groupby("subcategory"):
+            # Use same category ordering for expanders
+            for cat in sorted(detail["subcategory"].unique(), key=cat_sort_key):
+                group = detail[detail["subcategory"] == cat]
                 with st.expander(cat.title()):
                     g = group[display_cols].copy()
                     st.dataframe(
