@@ -107,11 +107,6 @@ st.markdown(
         background-color: rgba(255, 255, 255, 0.25);
     }}
 
-    .metric-label {{
-        font-size: 0.8rem;
-        opacity: 0.8;
-    }}
-
     .footer {{
         text-align: center;
         font-size: 0.75rem;
@@ -139,6 +134,20 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# =========================
+# SESSION STATE DEFAULTS
+# =========================
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
+if "trial_start" not in st.session_state:
+    st.session_state.trial_start = None
+if "metric_filter" not in st.session_state:
+    st.session_state.metric_filter = "All"   # All / Reorder ASAP
+if "inv_raw_df" not in st.session_state:
+    st.session_state.inv_raw_df = None
+if "sales_raw_df" not in st.session_state:
+    st.session_state.sales_raw_df = None
 
 # =========================
 # HELPERS
@@ -465,11 +474,6 @@ def generate_po_pdf(
 # 🔐 ADMIN + TRIAL GATE
 # =========================
 
-if "is_admin" not in st.session_state:
-    st.session_state.is_admin = False
-if "trial_start" not in st.session_state:
-    st.session_state.trial_start = None
-
 st.sidebar.markdown("### 👑 Admin Login")
 
 if not st.session_state.is_admin:
@@ -572,10 +576,21 @@ if section == "📊 Inventory Dashboard":
 
     date_diff = st.sidebar.slider("Days in Sales Period", 7, 90, 60)
 
-    if inv_file and product_sales_file:
+    # Cache raw dataframes when new files are uploaded
+    if inv_file is not None:
+        inv_df_raw = pd.read_csv(inv_file)
+        st.session_state.inv_raw_df = inv_df_raw
+
+    if product_sales_file is not None:
+        sales_raw_raw = pd.read_excel(product_sales_file)
+        st.session_state.sales_raw_df = sales_raw_raw
+
+    if st.session_state.inv_raw_df is not None and st.session_state.sales_raw_df is not None:
         try:
+            inv_df = st.session_state.inv_raw_df.copy()
+            sales_raw = st.session_state.sales_raw_df.copy()
+
             # -------- INVENTORY --------
-            inv_df = pd.read_csv(inv_file)
             inv_df.columns = inv_df.columns.str.strip().str.lower()
 
             # Auto-detect core inventory columns (supports BLAZE & Dutchie)
@@ -629,7 +644,6 @@ if section == "📊 Inventory Dashboard":
             )
 
             # -------- SALES --------
-            sales_raw = pd.read_excel(product_sales_file)
             sales_raw.columns = sales_raw.columns.astype(str).str.lower()
 
             # Auto-detect product name column
@@ -760,8 +774,49 @@ if section == "📊 Inventory Dashboard":
 
             detail["reorderpriority"] = detail.apply(tag, axis=1)
 
-            # Category filter (ordered by Rebelle categories first)
-            all_cats = sorted(detail["subcategory"].unique())
+            # =======================
+            # SUMMARY + CLICK FILTERS
+            # =======================
+            st.markdown("### Inventory Summary")
+
+            total_units = int(detail["unitssold"].sum())
+            reorder_asap = (detail["reorderpriority"] == "1 – Reorder ASAP").sum()
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button(
+                    f"Units Sold (Granular Size-Level): {total_units}",
+                    key="btn_total_units",
+                ):
+                    st.session_state.metric_filter = "All"
+            with col2:
+                if st.button(
+                    f"Reorder ASAP (Lines): {reorder_asap}",
+                    key="btn_reorder_asap",
+                ):
+                    st.session_state.metric_filter = "Reorder ASAP"
+
+            # Apply metric filter to detail for display
+            if st.session_state.metric_filter == "Reorder ASAP":
+                detail_view = detail[detail["reorderpriority"] == "1 – Reorder ASAP"].copy()
+            else:
+                detail_view = detail.copy()
+
+            st.markdown(
+                f"*Current filter:* **{st.session_state.metric_filter}**"
+            )
+
+            st.markdown("### Forecast Table")
+
+            def red_low(val):
+                try:
+                    v = int(val)
+                    return "color:#FF3131" if v < doh_threshold else ""
+                except Exception:
+                    return ""
+
+            # Category filter (ordered by Rebelle categories first) **after** metric filter
+            all_cats = sorted(detail_view["subcategory"].unique())
 
             def cat_sort_key(c):
                 c_low = str(c).lower()
@@ -776,28 +831,7 @@ if section == "📊 Inventory Dashboard":
                 all_cats_sorted,
                 default=all_cats_sorted,
             )
-            detail = detail[detail["subcategory"].isin(selected_cats)]
-
-            # =======================
-            # SUMMARY + TABLE OUTPUT
-            # =======================
-            st.markdown("### Inventory Summary")
-
-            total_units = int(detail["unitssold"].sum())
-            reorder_asap = (detail["reorderpriority"] == "1 – Reorder ASAP").sum()
-
-            col1, col2 = st.columns(2)
-            col1.metric("Units Sold (Granular Size-Level)", total_units)
-            col2.metric("Reorder ASAP (Lines)", reorder_asap)
-
-            st.markdown("### Forecast Table")
-
-            def red_low(val):
-                try:
-                    v = int(val)
-                    return "color:#FF3131" if v < doh_threshold else ""
-                except Exception:
-                    return ""
+            detail_view = detail_view[detail_view["subcategory"].isin(selected_cats)]
 
             # Make sure cannabis type (strain_type) is visible
             display_cols = [
@@ -812,11 +846,11 @@ if section == "📊 Inventory Dashboard":
                 "reorderqty",
                 "reorderpriority",
             ]
-            display_cols = [c for c in display_cols if c in detail.columns]
+            display_cols = [c for c in display_cols if c in detail_view.columns]
 
             # Use same category ordering for expanders
-            for cat in sorted(detail["subcategory"].unique(), key=cat_sort_key):
-                group = detail[detail["subcategory"] == cat]
+            for cat in sorted(detail_view["subcategory"].unique(), key=cat_sort_key):
+                group = detail_view[detail_view["subcategory"] == cat]
                 with st.expander(cat.title()):
                     g = group[display_cols].copy()
                     st.dataframe(
