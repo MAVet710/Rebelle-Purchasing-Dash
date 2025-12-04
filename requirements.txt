@@ -3,3 +3,7 @@ pandas
 numpy
 streamlit
 openpyxl
+reportlab
+plotly
+pandas
+numpy
