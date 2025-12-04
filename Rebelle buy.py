@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 
 # For PDF generation
@@ -26,6 +26,14 @@ CLIENT_NAME = "Rebelle Cannabis"
 APP_TITLE = f"{CLIENT_NAME} Purchasing Dashboard"
 APP_TAGLINE = "Streamlined purchasing visibility powered by Dutchie data."
 LICENSE_FOOTER = f"Licensed exclusively to {CLIENT_NAME} • Powered by MAVet710 Analytics"
+
+# 🔐 TRIAL SETTINGS
+TRIAL_KEY = "rebelle24"        # <-- Rebelle 24-hour trial key
+TRIAL_DURATION_HOURS = 24
+
+# 👑 ADMIN CREDS
+ADMIN_USERNAME = "God"
+ADMIN_PASSWORD = "Major420"
 
 # Tab icon (favicon)
 page_icon_url = (
@@ -320,6 +328,69 @@ def generate_po_pdf(
     return pdf
 
 # =========================
+# 🔐 ADMIN + TRIAL GATE
+# =========================
+
+# init flags
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
+if "trial_start" not in st.session_state:
+    st.session_state.trial_start = None
+
+st.sidebar.markdown("### 👑 Admin Login")
+
+if not st.session_state.is_admin:
+    admin_user = st.sidebar.text_input("Username", key="admin_user")
+    admin_pass = st.sidebar.text_input("Password", type="password", key="admin_pass")
+    if st.sidebar.button("Login as Admin"):
+        if admin_user == ADMIN_USERNAME and admin_pass == ADMIN_PASSWORD:
+            st.session_state.is_admin = True
+            st.sidebar.success("✅ Admin mode enabled.")
+        else:
+            st.sidebar.error("❌ Invalid admin credentials.")
+else:
+    st.sidebar.success("👑 Admin mode: unlimited access")
+    if st.sidebar.button("Logout Admin"):
+        st.session_state.is_admin = False
+        st.experimental_rerun()
+
+trial_now = datetime.now()
+
+if not st.session_state.is_admin:
+    # Only enforce trial if not admin
+    st.sidebar.markdown("### 🔐 Trial Access")
+
+    if st.session_state.trial_start is None:
+        trial_key_input = st.sidebar.text_input("Enter trial key", type="password", key="trial_key_input")
+        if st.sidebar.button("Activate Trial", key="activate_trial"):
+            if trial_key_input.strip() == TRIAL_KEY:
+                st.session_state.trial_start = trial_now.isoformat()
+                st.sidebar.success("✅ Trial activated. You have 24 hours of access.")
+            else:
+                st.sidebar.error("❌ Invalid trial key.")
+        st.warning("This is a trial build. Enter a valid key to unlock the app.")
+        st.stop()
+    else:
+        # Trial already started → check remaining time
+        try:
+            started_at = datetime.fromisoformat(st.session_state.trial_start)
+        except Exception:
+            st.session_state.trial_start = None
+            st.experimental_rerun()
+
+        elapsed = trial_now - started_at
+        remaining = timedelta(hours=TRIAL_DURATION_HOURS) - elapsed
+
+        if remaining.total_seconds() <= 0:
+            st.sidebar.error("⛔ Trial expired. Please contact the vendor for full access.")
+            st.error("The 24-hour trial has expired. Contact the vendor to purchase a full license.")
+            st.stop()
+        else:
+            hours_left = int(remaining.total_seconds() // 3600)
+            mins_left = int((remaining.total_seconds() % 3600) // 60)
+            st.sidebar.info(f"⏰ Trial time remaining: {hours_left}h {mins_left}m")
+
+# =========================
 # HEADER
 # =========================
 st.title(f"🌿 {APP_TITLE}")
@@ -330,7 +401,7 @@ st.markdown("---")
 if not PLOTLY_AVAILABLE:
     st.warning(
         "⚠️ Plotly is not installed in this environment. Charts will be disabled.\n\n"
-        "If using Streamlit Cloud, add `plotly` to your `requirements.txt` file."
+        "If using Streamlit Cloud, add `plotly` and `reportlab` to your `requirements.txt` file."
     )
 
 # =========================
@@ -373,10 +444,14 @@ if section == "📊 Inventory Dashboard":
             def extract_strain_type(name, subcat):
                 s = str(name).lower()
                 base = "unspecified"
-                if "indica" in s: base = "indica"
-                elif "sativa" in s: base = "sativa"
-                elif "hybrid" in s: base = "hybrid"
-                elif "cbd" in s: base = "cbd"
+                if "indica" in s:
+                    base = "indica"
+                elif "sativa" in s:
+                    base = "sativa"
+                elif "hybrid" in s:
+                    base = "hybrid"
+                elif "cbd" in s:
+                    base = "cbd"
                 vape = any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"])
                 preroll = any(k in s for k in ["pre roll", "preroll", "joint"])
                 if ("disposable" in s or "dispos" in s) and vape:
@@ -519,7 +594,7 @@ else:
     st.subheader("🧾 Purchase Order Builder")
 
     st.markdown(
-        "The **words above each PO field** are now white (PO-only), without changing other page colors."
+        "The **words above each PO field** are white (PO-only), without messing with the rest of the UI."
     )
 
     # -------------------------
@@ -706,3 +781,4 @@ st.markdown(
     f'<div class="footer">{LICENSE_FOOTER} • © {year}</div>',
     unsafe_allow_html=True,
 )
+
