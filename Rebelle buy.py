@@ -103,7 +103,7 @@ st.markdown(
         color: #ffffff !important;
     }}
 
-    /* Sidebar: force dark text on light gray background for readability */
+    /* Sidebar: force dark text on light gray for readability */
     [data-testid="stSidebar"] {{
         background-color: #f5f5f5 !important;
     }}
@@ -111,7 +111,7 @@ st.markdown(
         color: #111111 !important;
     }}
 
-    /* PO-only labels: words above each PO box in main content */
+    /* PO-only labels in main content */
     .po-label {{
         color: #ffffff !important;
         font-weight: 600;
@@ -492,32 +492,72 @@ if section == "📊 Inventory Dashboard":
                 lambda x: extract_size(x["itemname"], x["subcategory"]), axis=1
             )
 
+            # --- Product Sales File ---
             sales_raw = pd.read_excel(product_sales_file)
             sales_raw.columns = sales_raw.columns.astype(str).str.lower()
 
-            for try_col in ["product", "product name", "name", "item"]:
-                if try_col in sales_raw.columns:
-                    name_col = try_col
+            # Auto-detect product name column
+            name_candidates = [
+                "product",
+                "product name",
+                "product_name",
+                "name",
+                "item",
+                "item name",
+                "sku name",
+                "description",
+                "product title",
+            ]
+            name_col = None
+            for col in name_candidates:
+                if col in sales_raw.columns:
+                    name_col = col
                     break
-            else:
-                st.error("No product name column found in Product Sales report.")
-                st.stop()
 
-            for try_col in ["quantity sold", "qty sold", "units sold", "units"]:
-                if try_col in sales_raw.columns:
-                    qty_col = try_col
+            # If not found, let user choose from dropdown
+            if name_col is None:
+                name_col = st.selectbox(
+                    "Select PRODUCT NAME column from Product Sales report",
+                    options=list(sales_raw.columns),
+                    key="product_name_col_select",
+                )
+
+            # Auto-detect quantity/units sold column
+            qty_candidates = [
+                "quantity sold",
+                "qty sold",
+                "units sold",
+                "units",
+                "quantity",
+                "total units",
+            ]
+            qty_col = None
+            for col in qty_candidates:
+                if col in sales_raw.columns:
+                    qty_col = col
                     break
-            else:
-                qty_col = None
+
+            if qty_col is None:
+                qty_col = st.selectbox(
+                    "Select QUANTITY / UNITS SOLD column",
+                    options=[c for c in sales_raw.columns if c != name_col],
+                    key="qty_col_select",
+                )
 
             sales_raw["product_name"] = sales_raw[name_col].astype(str)
-            sales_raw["unitssold"] = pd.to_numeric(sales_raw.get(qty_col, 0), errors="coerce").fillna(0)
+            sales_raw["unitssold"] = pd.to_numeric(
+                sales_raw.get(qty_col, 0), errors="coerce"
+            ).fillna(0)
 
+            # Handle mastercategory
             if "mastercategory" not in sales_raw.columns:
                 if "category" in sales_raw.columns:
                     sales_raw = sales_raw.rename(columns={"category": "mastercategory"})
                 else:
-                    st.error("Master category missing.")
+                    st.error(
+                        "No 'mastercategory' or 'category' column found in Product Sales report. "
+                        "Please verify your export."
+                    )
                     st.stop()
 
             sales_raw["mastercategory"] = sales_raw["mastercategory"].astype(str).str.lower()
@@ -532,9 +572,19 @@ if section == "📊 Inventory Dashboard":
                 axis=1,
             )
 
-            inv_summary = inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"].sum().reset_index()
-            sales_summary = sales_df.groupby(["mastercategory", "packagesize"])["unitssold"].sum().reset_index()
-            sales_summary["avgunitsperday"] = (sales_summary["unitssold"] / date_diff) * velocity_adjustment
+            inv_summary = (
+                inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"]
+                .sum()
+                .reset_index()
+            )
+            sales_summary = (
+                sales_df.groupby(["mastercategory", "packagesize"])["unitssold"]
+                .sum()
+                .reset_index()
+            )
+            sales_summary["avgunitsperday"] = (
+                sales_summary["unitssold"] / date_diff
+            ) * velocity_adjustment
 
             detail = pd.merge(
                 inv_summary,
@@ -568,7 +618,9 @@ if section == "📊 Inventory Dashboard":
             detail["reorderpriority"] = detail.apply(tag, axis=1)
 
             all_cats = sorted(detail["subcategory"].unique())
-            selected_cats = st.sidebar.multiselect("Visible Categories", all_cats, default=all_cats)
+            selected_cats = st.sidebar.multiselect(
+                "Visible Categories", all_cats, default=all_cats
+            )
             detail = detail[detail["subcategory"].isin(selected_cats)]
 
             st.markdown("### Inventory Summary")
@@ -577,13 +629,17 @@ if section == "📊 Inventory Dashboard":
             reorder_asap = (detail["reorderpriority"] == "1 – Reorder ASAP").sum()
 
             col1, col2 = st.columns(2)
-            col1.metric("Units Sold", total_units)
-            col2.metric("Reorder ASAP", reorder_asap)
+            col1.metric("Units Sold (Filtered Cats)", total_units)
+            col2.metric("Reorder ASAP (Lines)", reorder_asap)
 
             st.markdown("### Forecast Table")
 
             def red_low(val):
-                return "color:#FF3131" if val < doh_threshold else ""
+                try:
+                    v = int(val)
+                    return "color:#FF3131" if v < doh_threshold else ""
+                except Exception:
+                    return ""
 
             for cat, group in detail.groupby("subcategory"):
                 with st.expander(cat.title()):
