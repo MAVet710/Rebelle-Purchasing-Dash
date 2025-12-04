@@ -24,7 +24,7 @@ except ImportError:
 # =========================
 CLIENT_NAME = "Rebelle Cannabis"
 APP_TITLE = f"{CLIENT_NAME} Purchasing Dashboard"
-APP_TAGLINE = "Streamlined purchasing visibility powered by Dutchie data."
+APP_TAGLINE = "Streamlined purchasing visibility powered by Dutchie / BLAZE data."
 LICENSE_FOOTER = f"Licensed exclusively to {CLIENT_NAME} • Powered by MAVet710 Analytics"
 
 # 🔐 TRIAL SETTINGS
@@ -127,6 +127,67 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# =========================
+# HELPERS
+# =========================
+
+def normalize_col(col: str) -> str:
+    """Lower + strip non-alphanumerics for matching (no spaces, etc.)."""
+    return re.sub(r"[^a-z0-9]", "", str(col).lower())
+
+def detect_column(columns, aliases):
+    """
+    Auto-detect a column by comparing normalized names
+    against a list of alias keys (already normalized).
+    """
+    norm_map = {normalize_col(c): c for c in columns}
+    for alias in aliases:
+        if alias in norm_map:
+            return norm_map[alias]
+    return None
+
+def extract_strain_type(name, subcat):
+    s = str(name).lower()
+    base = "unspecified"
+    if "indica" in s:
+        base = "indica"
+    elif "sativa" in s:
+        base = "sativa"
+    elif "hybrid" in s:
+        base = "hybrid"
+    elif "cbd" in s:
+        base = "cbd"
+
+    vape = any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"])
+    preroll = any(k in s for k in ["pre roll", "preroll", "joint"])
+
+    # Disposables (vapes)
+    if ("disposable" in s or "dispos" in s) and vape:
+        return base + " disposable" if base != "unspecified" else "disposable"
+
+    # Infused pre-rolls
+    if "infused" in s and preroll:
+        return base + " infused" if base != "unspecified" else "infused"
+
+    return base
+
+def extract_size(text, context=None):
+    s = str(text).lower()
+    # mg doses
+    mg = re.search(r"(\d+(\.\d+)?\s?mg)", s)
+    if mg:
+        return mg.group(1).replace(" ", "")
+    # grams (1g, 3.5g, etc.)
+    g = re.search(r"((?:\d+\.?\d*|\.\d+)\s?g)", s)
+    if g:
+        return g.group(1).replace(" ", "")
+    # 0.5g style vapes
+    if any(k in s for k in ["vape", "cart", "pen", "pod"]):
+        half = re.search(r"\b0\.5\b|\b\.5\b", s)
+        if half:
+            return "0.5g"
+    return "unspecified"
 
 # =========================
 # PDF GENERATION FOR PO
@@ -431,6 +492,15 @@ section = st.sidebar.radio(
 # ============================================================
 if section == "📊 Inventory Dashboard":
 
+    # Data source selector
+    st.sidebar.markdown("### 🧩 Data Source")
+    data_source = st.sidebar.selectbox(
+        "Select POS / Data Source",
+        ["BLAZE", "Dutchie"],
+        index=0,
+        help="Changes how column names are interpreted. Files are still just CSV/XLSX exports.",
+    )
+
     st.sidebar.header("📂 Upload Core Reports")
 
     inv_file = st.sidebar.file_uploader("Inventory CSV", type="csv")
@@ -445,47 +515,43 @@ if section == "📊 Inventory Dashboard":
 
     if inv_file and product_sales_file:
         try:
+            # -------- INVENTORY --------
             inv_df = pd.read_csv(inv_file)
             inv_df.columns = inv_df.columns.str.strip().str.lower()
 
+            # Auto-detect core inventory columns (supports BLAZE & Dutchie)
+            inv_name_aliases = [
+                "product", "productname", "item", "itemname", "name", "skuname", "skuid"
+            ]
+            inv_cat_aliases = [
+                "category", "subcategory", "productcategory", "department", "mastercategory"
+            ]
+            inv_qty_aliases = [
+                "available", "onhand", "onhandunits", "quantity", "qty", "quantityonhand",
+                "instock"
+            ]
+
+            name_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_name_aliases])
+            cat_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_cat_aliases])
+            qty_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_qty_aliases])
+
+            if not (name_col and cat_col and qty_col):
+                st.error(
+                    "Could not auto-detect inventory columns (product / category / on-hand). "
+                    "Check your Inventory export headers."
+                )
+                st.stop()
+
             inv_df = inv_df.rename(
-                columns={"product": "itemname", "category": "subcategory", "available": "onhandunits"}
+                columns={
+                    name_col: "itemname",
+                    cat_col: "subcategory",
+                    qty_col: "onhandunits",
+                }
             )
+
             inv_df["onhandunits"] = pd.to_numeric(inv_df["onhandunits"], errors="coerce").fillna(0)
             inv_df["subcategory"] = inv_df["subcategory"].astype(str).str.lower()
-
-            def extract_strain_type(name, subcat):
-                s = str(name).lower()
-                base = "unspecified"
-                if "indica" in s:
-                    base = "indica"
-                elif "sativa" in s:
-                    base = "sativa"
-                elif "hybrid" in s:
-                    base = "hybrid"
-                elif "cbd" in s:
-                    base = "cbd"
-                vape = any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"])
-                preroll = any(k in s for k in ["pre roll", "preroll", "joint"])
-                if ("disposable" in s or "dispos" in s) and vape:
-                    return base + " disposable" if base != "unspecified" else "disposable"
-                if "infused" in s and preroll:
-                    return base + " infused" if base != "unspecified" else "infused"
-                return base
-
-            def extract_size(text, context=None):
-                s = str(text).lower()
-                mg = re.search(r"(\d+(\.\d+)?\s?mg)", s)
-                if mg:
-                    return mg.group(1).replace(" ", "")
-                g = re.search(r"((?:\d+\.?\d*|\.\d+)\s?g)", s)
-                if g:
-                    return g.group(1).replace(" ", "")
-                if any(k in s for k in ["vape", "cart", "pen", "pod"]):
-                    half = re.search(r"\b0\.5\b|\b\.5\b", s)
-                    if half:
-                        return "0.5g"
-                return "unspecified"
 
             inv_df["strain_type"] = inv_df.apply(
                 lambda x: extract_strain_type(x["itemname"], x["subcategory"]), axis=1
@@ -494,112 +560,97 @@ if section == "📊 Inventory Dashboard":
                 lambda x: extract_size(x["itemname"], x["subcategory"]), axis=1
             )
 
-            # --- Product Sales File ---
-            sales_raw = pd.read_excel(product_sales_file)
-            sales_raw.columns = sales_raw.columns.astype(str).str.lower()
-
-            # Auto-detect product name column
-            name_candidates = [
-                "product",
-                "product name",
-                "product_name",
-                "name",
-                "item",
-                "item name",
-                "sku name",
-                "description",
-                "product title",
-            ]
-            name_col = None
-            for col in name_candidates:
-                if col in sales_raw.columns:
-                    name_col = col
-                    break
-
-            if name_col is None:
-                name_col = st.selectbox(
-                    "Select PRODUCT NAME column from Product Sales report",
-                    options=list(sales_raw.columns),
-                    key="product_name_col_select",
-                )
-
-            # Auto-detect quantity/units sold column
-            qty_candidates = [
-                "quantity sold",
-                "qty sold",
-                "units sold",
-                "units",
-                "quantity",
-                "total units",
-            ]
-            qty_col = None
-            for col in qty_candidates:
-                if col in sales_raw.columns:
-                    qty_col = col
-                    break
-
-            if qty_col is None:
-                qty_col = st.selectbox(
-                    "Select QUANTITY / UNITS SOLD column",
-                    options=[c for c in sales_raw.columns if c != name_col],
-                    key="qty_col_select",
-                )
-
-            sales_raw["product_name"] = sales_raw[name_col].astype(str)
-            sales_raw["unitssold"] = pd.to_numeric(
-                sales_raw.get(qty_col, 0), errors="coerce"
-            ).fillna(0)
-
-            # Handle mastercategory
-            if "mastercategory" not in sales_raw.columns:
-                if "category" in sales_raw.columns:
-                    sales_raw = sales_raw.rename(columns={"category": "mastercategory"})
-                else:
-                    st.error(
-                        "No 'mastercategory' or 'category' column found in Product Sales report. "
-                        "Please verify your export."
-                    )
-                    st.stop()
-
-            sales_raw["mastercategory"] = sales_raw["mastercategory"].astype(str).str.lower()
-
-            sales_df = sales_raw[
-                ~sales_raw["mastercategory"].str.contains("accessor") &
-                (sales_raw["mastercategory"] != "all")
-            ].copy()
-
-            sales_df["packagesize"] = sales_df.apply(
-                lambda row: extract_size(row["product_name"], row["mastercategory"]),
-                axis=1,
-            )
-
+            # Group inventory
             inv_summary = (
                 inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"]
                 .sum()
                 .reset_index()
             )
-            sales_summary = (
-                sales_df.groupby(["mastercategory", "packagesize"])["unitssold"]
+
+            # -------- SALES --------
+            sales_raw = pd.read_excel(product_sales_file)
+            sales_raw.columns = sales_raw.columns.astype(str).str.lower()
+
+            # Auto-detect product name column
+            sales_name_aliases = [
+                "product", "productname", "producttitle", "productid", "name",
+                "item", "itemname", "skuname", "sku", "description"
+            ]
+            name_col_sales = detect_column(
+                sales_raw.columns, [normalize_col(a) for a in sales_name_aliases]
+            )
+
+            # Auto-detect quantity/units sold column
+            qty_aliases = [
+                "quantitysold", "qtysold", "unitssold", "unitsold",
+                "units", "totalunits", "quantity"
+            ]
+            qty_col_sales = detect_column(
+                sales_raw.columns, [normalize_col(a) for a in qty_aliases]
+            )
+
+            # Auto-detect category/mastercategory column
+            mc_aliases = ["mastercategory", "category", "master_category", "productcategory"]
+            mc_col = detect_column(sales_raw.columns, [normalize_col(a) for a in mc_aliases])
+
+            if not (name_col_sales and qty_col_sales and mc_col):
+                st.error(
+                    "Could not auto-detect required columns in Product Sales report "
+                    "(product / quantity / category). Check your export."
+                )
+                st.stop()
+
+            # Normalize to internal names
+            sales_raw = sales_raw.rename(
+                columns={
+                    name_col_sales: "product_name",
+                    qty_col_sales: "unitssold",
+                    mc_col: "mastercategory",
+                }
+            )
+
+            sales_raw["unitssold"] = pd.to_numeric(
+                sales_raw["unitssold"], errors="coerce"
+            ).fillna(0)
+            sales_raw["mastercategory"] = sales_raw["mastercategory"].astype(str).str.lower()
+
+            # Filter out accessories / 'all'
+            sales_df = sales_raw[
+                ~sales_raw["mastercategory"].str.contains("accessor")
+                & (sales_raw["mastercategory"] != "all")
+            ].copy()
+
+            # Category-level velocity
+            sales_cat = (
+                sales_df.groupby("mastercategory")["unitssold"]
                 .sum()
                 .reset_index()
             )
-            sales_summary["avgunitsperday"] = (
-                sales_summary["unitssold"] / date_diff
+            sales_cat["avgunitsperday"] = (
+                sales_cat["unitssold"] / date_diff
             ) * velocity_adjustment
 
+            # Merge inventory summary with category velocity
             detail = pd.merge(
                 inv_summary,
-                sales_summary,
+                sales_cat,
                 how="left",
-                left_on=["subcategory", "packagesize"],
-                right_on=["mastercategory", "packagesize"],
+                left_on="subcategory",
+                right_on="mastercategory",
             ).fillna(0)
 
+            # DOH + Reorder
             detail["daysonhand"] = np.where(
                 detail["avgunitsperday"] > 0,
                 detail["onhandunits"] / detail["avgunitsperday"],
                 0,
-            ).astype(int)
+            )
+            detail["daysonhand"] = (
+                detail["daysonhand"]
+                .replace([np.inf, -np.inf], 0)
+                .fillna(0)
+                .astype(int)
+            )
 
             detail["reorderqty"] = np.where(
                 detail["daysonhand"] < doh_threshold,
@@ -618,19 +669,23 @@ if section == "📊 Inventory Dashboard":
 
             detail["reorderpriority"] = detail.apply(tag, axis=1)
 
+            # Category filter (hide certain cats if needed)
             all_cats = sorted(detail["subcategory"].unique())
             selected_cats = st.sidebar.multiselect(
                 "Visible Categories", all_cats, default=all_cats
             )
             detail = detail[detail["subcategory"].isin(selected_cats)]
 
+            # =======================
+            # SUMMARY + TABLE OUTPUT
+            # =======================
             st.markdown("### Inventory Summary")
 
             total_units = int(detail["unitssold"].sum())
             reorder_asap = (detail["reorderpriority"] == "1 – Reorder ASAP").sum()
 
             col1, col2 = st.columns(2)
-            col1.metric("Units Sold (Filtered Cats)", total_units)
+            col1.metric("Units Sold (Category-Level)", total_units)
             col2.metric("Reorder ASAP (Lines)", reorder_asap)
 
             st.markdown("### Forecast Table")
@@ -642,10 +697,26 @@ if section == "📊 Inventory Dashboard":
                 except Exception:
                     return ""
 
+            # Make sure mastercategory is first in view
+            display_cols = [
+                "mastercategory",
+                "subcategory",
+                "strain_type",
+                "packagesize",
+                "onhandunits",
+                "unitssold",
+                "avgunitsperday",
+                "daysonhand",
+                "reorderqty",
+                "reorderpriority",
+            ]
+            display_cols = [c for c in display_cols if c in detail.columns]
+
             for cat, group in detail.groupby("subcategory"):
                 with st.expander(cat.title()):
+                    g = group[display_cols].copy()
                     st.dataframe(
-                        group.style.applymap(red_low, subset=["daysonhand"]),
+                        g.style.applymap(red_low, subset=["daysonhand"]),
                         use_container_width=True,
                     )
 
