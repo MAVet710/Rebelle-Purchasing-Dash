@@ -159,8 +159,9 @@ def extract_strain_type(name, subcat):
     elif "cbd" in s:
         base = "cbd"
 
+    # Recognize vapes / pens
     vape = any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"])
-    preroll = any(k in s for k in ["pre roll", "preroll", "joint"])
+    preroll = any(k in s for k in ["pre roll", "preroll", "pre-roll", "joint"])
 
     # Disposables (vapes)
     if ("disposable" in s or "dispos" in s) and vape:
@@ -174,19 +175,27 @@ def extract_strain_type(name, subcat):
 
 def extract_size(text, context=None):
     s = str(text).lower()
+
     # mg doses
     mg = re.search(r"(\d+(\.\d+)?\s?mg)", s)
     if mg:
         return mg.group(1).replace(" ", "")
-    # grams (1g, 3.5g, etc.)
-    g = re.search(r"((?:\d+\.?\d*|\.\d+)\s?g)", s)
+
+    # grams / ounces: normalize 1oz/1 oz/28g to "28g"
+    g = re.search(r"((?:\d+\.?\d*|\.\d+)\s?(g|oz))", s)
     if g:
-        return g.group(1).replace(" ", "")
-    # 0.5g style vapes
-    if any(k in s for k in ["vape", "cart", "pen", "pod"]):
+        val = g.group(1).replace(" ", "")
+        val_lower = val.lower()
+        if val_lower in ["1oz", "1.0oz", "28g", "28.0g"]:
+            return "28g"
+        return val_lower
+
+    # 0.5g style vapes (if "vape", "cart", "pen", "pod" appears)
+    if any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"]):
         half = re.search(r"\b0\.5\b|\b\.5\b", s)
         if half:
             return "0.5g"
+
     return "unspecified"
 
 # =========================
@@ -492,7 +501,7 @@ section = st.sidebar.radio(
 # ============================================================
 if section == "📊 Inventory Dashboard":
 
-    # Data source selector
+    # Data source selector (for future logic; right now aliases work for both)
     st.sidebar.markdown("### 🧩 Data Source")
     data_source = st.sidebar.selectbox(
         "Select POS / Data Source",
@@ -553,6 +562,7 @@ if section == "📊 Inventory Dashboard":
             inv_df["onhandunits"] = pd.to_numeric(inv_df["onhandunits"], errors="coerce").fillna(0)
             inv_df["subcategory"] = inv_df["subcategory"].astype(str).str.lower()
 
+            # Strain Type + Package Size
             inv_df["strain_type"] = inv_df.apply(
                 lambda x: extract_strain_type(x["itemname"], x["subcategory"]), axis=1
             )
@@ -560,7 +570,7 @@ if section == "📊 Inventory Dashboard":
                 lambda x: extract_size(x["itemname"], x["subcategory"]), axis=1
             )
 
-            # Group inventory
+            # Group inventory by subcategory + strain + size
             inv_summary = (
                 inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"]
                 .sum()
@@ -620,26 +630,54 @@ if section == "📊 Inventory Dashboard":
                 & (sales_raw["mastercategory"] != "all")
             ].copy()
 
-            # Category-level velocity
-            sales_cat = (
-                sales_df.groupby("mastercategory")["unitssold"]
+            # Add package size on the sales side (granular per size)
+            sales_df["packagesize"] = sales_df.apply(
+                lambda row: extract_size(row["product_name"], row["mastercategory"]),
+                axis=1,
+            )
+
+            # Category + size level velocity
+            sales_summary = (
+                sales_df.groupby(["mastercategory", "packagesize"])["unitssold"]
                 .sum()
                 .reset_index()
             )
-            sales_cat["avgunitsperday"] = (
-                sales_cat["unitssold"] / date_diff
+            sales_summary["avgunitsperday"] = (
+                sales_summary["unitssold"] / date_diff
             ) * velocity_adjustment
 
-            # Merge inventory summary with category velocity
+            # Merge inventory summary with size-level velocity
             detail = pd.merge(
                 inv_summary,
-                sales_cat,
+                sales_summary,
                 how="left",
-                left_on="subcategory",
-                right_on="mastercategory",
+                left_on=["subcategory", "packagesize"],
+                right_on=["mastercategory", "packagesize"],
             ).fillna(0)
 
-            # DOH + Reorder
+            # --- Ensure Flower 28g / 1oz always shows ---
+            flower_mask = detail["subcategory"].str.contains("flower", na=False)
+            flower_cats = detail.loc[flower_mask, "subcategory"].unique()
+
+            missing_rows = []
+            for cat in flower_cats:
+                if not ((detail["subcategory"] == cat) & (detail["packagesize"] == "28g")).any():
+                    missing_rows.append(
+                        {
+                            "subcategory": cat,
+                            "strain_type": "unspecified",
+                            "packagesize": "28g",
+                            "onhandunits": 0,
+                            "mastercategory": cat,
+                            "unitssold": 0,
+                            "avgunitsperday": 0,
+                        }
+                    )
+
+            if missing_rows:
+                detail = pd.concat([detail, pd.DataFrame(missing_rows)], ignore_index=True)
+
+            # DOH + Reorder (granular per row)
             detail["daysonhand"] = np.where(
                 detail["avgunitsperday"] > 0,
                 detail["onhandunits"] / detail["avgunitsperday"],
@@ -685,7 +723,7 @@ if section == "📊 Inventory Dashboard":
             reorder_asap = (detail["reorderpriority"] == "1 – Reorder ASAP").sum()
 
             col1, col2 = st.columns(2)
-            col1.metric("Units Sold (Category-Level)", total_units)
+            col1.metric("Units Sold (Granular Size-Level)", total_units)
             col2.metric("Reorder ASAP (Lines)", reorder_asap)
 
             st.markdown("### Forecast Table")
@@ -697,7 +735,7 @@ if section == "📊 Inventory Dashboard":
                 except Exception:
                     return ""
 
-            # Make sure mastercategory is first in view
+            # Make sure cannabis type (strain_type) is visible again
             display_cols = [
                 "mastercategory",
                 "subcategory",
