@@ -176,7 +176,7 @@ try:
     else:
         sheets_status = "gcp_service_account not defined in secrets; autosave is in-memory only."
 except Exception as e:
-    GOOGLE_SHEETS_ENABLED = False
+    GOOGLE_SHEETS_ENABLED = False    # fail safely
     sheets_status = f"Error initializing Google Sheets: {e}"
 
 # ============================================================================
@@ -261,7 +261,7 @@ with st.sidebar:
     st.markdown("### ℹ️ Vendor Autosave")
     st.info(sheets_status)
 
-    # Admin-only debug
+    # Admin-only debug (hidden from clients)
     if st.session_state.is_admin:
         with st.expander("Developer debug (hidden from clients)", expanded=False):
             st.caption("Loaded secrets (keys only):")
@@ -326,6 +326,24 @@ def calculate_reorder_qty(doh, threshold, avg_units_per_day):
     return int(math.ceil(gap * avg_units_per_day))
 
 
+def find_column(possible_cols, df_columns):
+    """
+    Flexible matching for different column name variants.
+    - Ignores case
+    - Ignores spaces, underscores, and hyphens
+    Returns the first match from df_columns or None.
+    """
+    cleaned_cols = {
+        c.lower().replace(" ", "").replace("_", "").replace("-", ""): c
+        for c in df_columns
+    }
+
+    for target in possible_cols:
+        key = target.lower().replace(" ", "").replace("_", "").replace("-", "")
+        if key in cleaned_cols:
+            return cleaned_cols[key]
+    return None
+
 # ============================================================================
 # INVENTORY DASHBOARD
 # ============================================================================
@@ -361,6 +379,7 @@ if st.session_state.app_section == "Inventory Dashboard":
         st.info("Upload **Inventory CSV** and **Product Sales** to generate forecasts.")
     else:
         try:
+            # ----------------- INVENTORY FILE -----------------
             inv_df = pd.read_csv(inv_file)
             inv_df.columns = inv_df.columns.str.strip().str.lower()
 
@@ -444,28 +463,36 @@ if st.session_state.app_section == "Inventory Dashboard":
                 .reset_index()
             )
 
-            # Sales
+            # ----------------- PRODUCT SALES FILE -----------------
             sales_raw = pd.read_excel(product_sales_file)
             sales_raw.columns = sales_raw.columns.astype(str).str.strip().str.lower()
 
-            qty_sold_col = None
-            for c in sales_raw.columns:
-                if "quantity" in c and "sold" in c:
-                    qty_sold_col = c
-                    break
-                if c in ["unitssold", "units sold"]:
-                    qty_sold_col = c
-                    break
-            cat_sales_col = None
-            for c in sales_raw.columns:
-                if c in ["mastercategory", "category", "subcategory"]:
-                    cat_sales_col = c
-                    break
+            # Flexible variants for quantity sold
+            qty_variants = [
+                "quantitysold", "quantity_sold", "quantity sold",
+                "qtysold", "qty", "sold", "unitssold", "units sold",
+                "salesunits", "totalunits", "totalsold", "soldunits"
+            ]
+
+            # Flexible variants for category / master category
+            cat_variants = [
+                "mastercategory", "master category",
+                "category", "productcategory", "product category",
+                "subcategory", "department", "dept"
+            ]
+
+            qty_sold_col = find_column(qty_variants, sales_raw.columns)
+            cat_sales_col = find_column(cat_variants, sales_raw.columns)
 
             if qty_sold_col is None or cat_sales_col is None:
                 st.error(
-                    "Product Sales report missing a category/master category column "
-                    "and/or a quantity sold column."
+                    "Product Sales file detected but could not find required columns.\n\n"
+                    "**Looked for quantity variants:** "
+                    + ", ".join(qty_variants)
+                    + "\n\n**Looked for category variants:** "
+                    + ", ".join(cat_variants)
+                    + "\n\n**Columns in your file:** "
+                    + ", ".join(list(sales_raw.columns))
                 )
                 st.stop()
 
