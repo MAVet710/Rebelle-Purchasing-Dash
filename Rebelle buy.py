@@ -78,7 +78,7 @@ VENDOR_COLUMNS = [
 ]
 
 # ------------------------------------------------------------
-# GOOGLE SHEETS (VENDOR AUTOSAVE) – EXPLICIT DEBUG
+# GOOGLE SHEETS (VENDOR AUTOSAVE) – FLEXIBLE SECRET LOOKUP
 # ------------------------------------------------------------
 GOOGLE_SHEETS_ENABLED = False
 VENDOR_WS = None
@@ -91,19 +91,29 @@ except Exception as e:
     GSHEETS_ERROR = f"Import error (gspread/google-auth): {e}"
 else:
     try:
-        if "gcp_service_account" in st.secrets and "VENDOR_SHEET_ID" in st.secrets:
-            scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-            creds = Credentials.from_service_account_info(
-                st.secrets["gcp_service_account"], scopes=scopes
-            )
-            gc = gspread.authorize(creds)
-            VENDOR_WS = gc.open_by_key(st.secrets["VENDOR_SHEET_ID"]).sheet1
-            GOOGLE_SHEETS_ENABLED = True
+        if "gcp_service_account" in st.secrets:
+            sa_info = st.secrets["gcp_service_account"]
+
+            # Try to find VENDOR_SHEET_ID either at root OR inside gcp_service_account block
+            sheet_id = None
+            if "VENDOR_SHEET_ID" in st.secrets:
+                sheet_id = st.secrets["VENDOR_SHEET_ID"]
+            elif isinstance(sa_info, dict) and "VENDOR_SHEET_ID" in sa_info:
+                sheet_id = sa_info["VENDOR_SHEET_ID"]
+
+            if sheet_id:
+                scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+                creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
+                gc = gspread.authorize(creds)
+                VENDOR_WS = gc.open_by_key(sheet_id).sheet1
+                GOOGLE_SHEETS_ENABLED = True
+            else:
+                GSHEETS_ERROR = (
+                    "VENDOR_SHEET_ID not found. Define it either at root in secrets.toml "
+                    "or inside the [gcp_service_account] block."
+                )
         else:
-            GSHEETS_ERROR = (
-                "Secrets missing 'gcp_service_account' or 'VENDOR_SHEET_ID'. "
-                f"Found keys: {list(st.secrets.keys())}"
-            )
+            GSHEETS_ERROR = "Secrets missing 'gcp_service_account'."
     except Exception as e:
         GSHEETS_ERROR = f"Runtime error during Sheets setup: {e}"
 
