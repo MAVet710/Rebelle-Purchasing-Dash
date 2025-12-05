@@ -23,6 +23,8 @@ except ImportError:
 # OPTIONAL / SAFE IMPORT FOR GOOGLE SHEETS (VENDOR AUTOSAVE)
 # ------------------------------------------------------------
 GOOGLE_SHEETS_ENABLED = False
+st.sidebar.write("GOOGLE_SHEETS_ENABLED:", GOOGLE_SHEETS_ENABLED)
+
 VENDOR_WS = None
 
 try:
@@ -91,6 +93,7 @@ page_icon_url = (
 )
 
 st.set_page_config(
+    st.sidebar.write("Secrets keys:", list(st.secrets.keys()))
     page_title=APP_TITLE,
     layout="wide",
     page_icon=page_icon_url,
