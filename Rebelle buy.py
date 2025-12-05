@@ -5,14 +5,16 @@ import re
 from datetime import datetime, timedelta
 from io import BytesIO
 
-# PDF generation
+# For PDF generation
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 
-# Optional Plotly
+# ------------------------------------------------------------
+# OPTIONAL / SAFE IMPORT FOR PLOTLY
+# ------------------------------------------------------------
 try:
-    import plotly.express as px
+    import plotly.express as px  # noqa: F401
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
@@ -25,12 +27,15 @@ APP_TITLE = f"{CLIENT_NAME} Purchasing Dashboard"
 APP_TAGLINE = "Streamlined purchasing visibility powered by Dutchie / BLAZE data."
 LICENSE_FOOTER = f"Licensed exclusively to {CLIENT_NAME} • Powered by MAVet710 Analytics"
 
-# Trial + Admin
-TRIAL_KEY = "rebelle24"
+# 🔐 TRIAL SETTINGS
+TRIAL_KEY = "rebelle24"        # Rebelle 24-hour trial key
 TRIAL_DURATION_HOURS = 24
+
+# 👑 ADMIN CREDS
 ADMIN_USERNAME = "God"
 ADMIN_PASSWORD = "Major420"
 
+# ✅ Canonical Rebelle category names (values, not column names)
 REB_CATEGORIES = [
     "flower",
     "pre rolls",
@@ -42,6 +47,7 @@ REB_CATEGORIES = [
     "topicals",
 ]
 
+# Tab icon (favicon)
 page_icon_url = (
     "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
     "ef50d34e20caf45231642e957137d6141082dbb9/rebelle.jpg"
@@ -53,42 +59,38 @@ st.set_page_config(
     page_icon=page_icon_url,
 )
 
+# Background image
 background_url = (
     "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
     "ef50d34e20caf45231642e957137d6141082dbb9/rebelle%20main.png"
 )
 
 # =========================
-# THEME TOGGLE (LIGHT / DARK)
+# SESSION STATE DEFAULTS
 # =========================
-if "theme_mode" not in st.session_state:
-    st.session_state.theme_mode = "Dark"
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
+if "trial_start" not in st.session_state:
+    st.session_state.trial_start = None
+if "metric_filter" not in st.session_state:
+    st.session_state.metric_filter = "All"   # All / Reorder ASAP
+if "inv_raw_df" not in st.session_state:
+    st.session_state.inv_raw_df = None
+if "sales_raw_df" not in st.session_state:
+    st.session_state.sales_raw_df = None
+if "extra_sales_df" not in st.session_state:
+    st.session_state.extra_sales_df = None
+if "theme" not in st.session_state:
+    st.session_state.theme = "Dark"  # Dark by default
 
-with st.sidebar:
-    st.markdown("### 🎨 Theme")
-    theme_choice = st.radio("Mode", ["Dark", "Light"], index=0 if st.session_state.theme_mode == "Dark" else 1)
-    st.session_state.theme_mode = theme_choice
-
-if st.session_state.theme_mode == "Dark":
-    main_overlay = "rgba(0, 0, 0, 0.85)"
-    main_text_color = "#ffffff"
-    table_text_color = "#ffffff"
-    sidebar_bg = "#111417"
-    sidebar_text = "#f5f5f5"
-    sidebar_input_bg = "#1f2430"
-    sidebar_input_border = "#444444"
-else:
-    main_overlay = "rgba(255, 255, 255, 0.94)"
-    main_text_color = "#111111"
-    table_text_color = "#111111"
-    sidebar_bg = "#f5f5f5"
-    sidebar_text = "#111111"
-    sidebar_input_bg = "#ffffff"
-    sidebar_input_border = "#888888"
+theme = st.session_state.theme
 
 # =========================
-# GLOBAL STYLING
+# GLOBAL STYLING (theme-aware)
 # =========================
+main_bg = "rgba(0, 0, 0, 0.85)" if theme == "Dark" else "rgba(255, 255, 255, 0.94)"
+main_text = "#ffffff" if theme == "Dark" else "#111111"
+
 st.markdown(
     f"""
     <style>
@@ -99,27 +101,31 @@ st.markdown(
         background-attachment: fixed;
     }}
 
+    /* Main content area (center) */
     .block-container {{
-        background-color: {main_overlay};
+        background-color: {main_bg};
         padding: 2rem;
         border-radius: 12px;
-        color: {main_text_color} !important;
+        color: {main_text} !important;
     }}
 
+    /* Force almost all text in main area to theme text, but keep input text default */
     .block-container *:not(input):not(textarea):not(select) {{
-        color: {main_text_color} !important;
+        color: {main_text} !important;
     }}
 
+    /* Keep tables readable on dark background */
     .dataframe td {{
-        color: {table_text_color} !important;
+        color: {main_text} !important;
     }}
 
     .stButton>button {{
         background-color: rgba(255, 255, 255, 0.08);
-        color: {main_text_color};
+        color: {main_text};
         border: 1px solid rgba(255, 255, 255, 0.8);
         border-radius: 6px;
     }}
+
     .stButton>button:hover {{
         background-color: rgba(255, 255, 255, 0.25);
     }}
@@ -129,34 +135,28 @@ st.markdown(
         font-size: 0.75rem;
         opacity: 0.7;
         margin-top: 2rem;
-        color: {main_text_color} !important;
+        color: {main_text} !important;
     }}
 
-    /* Sidebar styling */
+    /* Sidebar: light, high-contrast for typing */
     [data-testid="stSidebar"] {{
-        background-color: {sidebar_bg} !important;
+        background-color: #f3f4f6 !important;
     }}
     [data-testid="stSidebar"] * {{
-        color: {sidebar_text} !important;
+        color: #111111 !important;
+        font-size: 0.9rem;
     }}
     [data-testid="stSidebar"] input,
     [data-testid="stSidebar"] textarea,
-    [data-testid="stSidebar"] select,
-    [data-testid="stSidebar"] .stTextInput input,
-    [data-testid="stSidebar"] .stNumberInput input {{
-        background-color: {sidebar_input_bg} !important;
-        color: {sidebar_text} !important;
-        border-color: {sidebar_input_border} !important;
-    }}
-    [data-testid="stSidebar"] .stRadio > label,
-    [data-testid="stSidebar"] label {{
-        color: {sidebar_text} !important;
-        font-weight: 500;
+    [data-testid="stSidebar"] select {{
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        border-radius: 4px;
     }}
 
     /* PO-only labels in main content */
     .po-label {{
-        color: {main_text_color} !important;
+        color: {main_text} !important;
         font-weight: 600;
         font-size: 0.9rem;
         margin-bottom: 0.1rem;
@@ -167,51 +167,64 @@ st.markdown(
 )
 
 # =========================
-# SESSION DEFAULTS
+# HELPER FUNCTIONS
 # =========================
-if "is_admin" not in st.session_state:
-    st.session_state.is_admin = False
-if "trial_start" not in st.session_state:
-    st.session_state.trial_start = None
-if "metric_filter" not in st.session_state:
-    st.session_state.metric_filter = "All"
-if "inv_raw_df" not in st.session_state:
-    st.session_state.inv_raw_df = None
-if "sales_raw_df" not in st.session_state:
-    st.session_state.sales_raw_df = None
 
-# =========================
-# HELPERS
-# =========================
 def normalize_col(col: str) -> str:
+    """Lower + strip non-alphanumerics for matching (no spaces, etc.)."""
     return re.sub(r"[^a-z0-9]", "", str(col).lower())
 
+
 def detect_column(columns, aliases):
+    """
+    Auto-detect a column by comparing normalized names
+    against a list of alias keys (already normalized).
+    """
     norm_map = {normalize_col(c): c for c in columns}
     for alias in aliases:
         if alias in norm_map:
             return norm_map[alias]
     return None
 
+
 def normalize_rebelle_category(raw):
+    """Map similar names to canonical Rebelle categories."""
     s = str(raw).lower().strip()
+
+    # Flower
     if any(k in s for k in ["flower", "bud", "buds", "cannabis flower"]):
         return "flower"
+
+    # Pre Rolls
     if any(k in s for k in ["pre roll", "preroll", "pre-roll", "joint", "joints"]):
         return "pre rolls"
+
+    # Vapes
     if any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"]):
         return "vapes"
+
+    # Edibles
     if any(k in s for k in ["edible", "gummy", "chocolate", "chew", "cookies"]):
         return "edibles"
-    if any(k in s for k in ["beverage", "drink", "shot", "drinkable"]):
+
+    # Beverages
+    if any(k in s for k in ["beverage", "drink", "drinkable", "shot", "beverages"]):
         return "beverages"
+
+    # Concentrates
     if any(k in s for k in ["concentrate", "wax", "shatter", "crumble", "resin", "rosin", "dab"]):
         return "concentrates"
-    if any(k in s for k in ["tincture", "drops", "sublingual", "dropper"]):
+
+    # Tinctures
+    if any(k in s for k in ["tincture", "tinctures", "drops", "sublingual", "dropper"]):
         return "tinctures"
+
+    # Topicals
     if any(k in s for k in ["topical", "lotion", "cream", "salve", "balm"]):
         return "topicals"
-    return s
+
+    return s  # unchanged if not matched
+
 
 def extract_strain_type(name, subcat):
     s = str(name).lower()
@@ -225,22 +238,30 @@ def extract_strain_type(name, subcat):
     elif "cbd" in s:
         base = "cbd"
 
+    # Recognize vapes / pens
     vape = any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"])
     preroll = any(k in s for k in ["pre roll", "preroll", "pre-roll", "joint"])
 
+    # Disposables (vapes)
     if ("disposable" in s or "dispos" in s) and vape:
         return base + " disposable" if base != "unspecified" else "disposable"
+
+    # Infused pre-rolls
     if "infused" in s and preroll:
         return base + " infused" if base != "unspecified" else "infused"
+
     return base
+
 
 def extract_size(text, context=None):
     s = str(text).lower()
 
+    # mg doses
     mg = re.search(r"(\d+(\.\d+)?\s?mg)", s)
     if mg:
         return mg.group(1).replace(" ", "")
 
+    # grams / ounces: normalize 1oz/1 oz/28g to "28g"
     g = re.search(r"((?:\d+\.?\d*|\.\d+)\s?(g|oz))", s)
     if g:
         val = g.group(1).replace(" ", "")
@@ -249,6 +270,7 @@ def extract_size(text, context=None):
             return "28g"
         return val_lower
 
+    # 0.5g style vapes (if "vape", "cart", "pen", "pod" appears)
     if any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"]):
         half = re.search(r"\b0\.5\b|\b\.5\b", s)
         if half:
@@ -256,53 +278,45 @@ def extract_size(text, context=None):
 
     return "unspecified"
 
-# ---- Smarter sales Excel header detection ----
-def read_sales_excel_with_header_detection(uploaded_file):
+
+def read_inventory_file(uploaded_file):
     """
-    Handle Dutchie / BLAZE Excel exports that sometimes have
-    3–5 non-data rows above the real header.
+    Read inventory CSV while being robust to 3–5 line headers
+    (e.g., Dutchie/BLAZE 'Export Date / From Date / To Date' at the top).
     """
-    raw = pd.read_excel(uploaded_file, header=None)
-
-    header_row_idx = None
-
-    qty_keywords = [
-        "quantity", "qty", "units", "items", "items sold", "item sold",
-        "qty sold", "quantity sold", "unit sold", "units sold"
-    ]
-    cat_keywords = [
-        "category", "category name", "product category",
-        "productcategory", "master category", "mastercategory",
-        "product type", "type"
-    ]
-    prod_keywords = [
-        "product", "product name", "product sku", "sku",
-        "item", "item name", "producttitle", "product id"
-    ]
-    sales_keywords = ["sales", "total sales", "gross sales", "net sales"]
-
-    max_scan = min(15, len(raw))
-
+    uploaded_file.seek(0)
+    tmp = pd.read_csv(uploaded_file, header=None)
+    header_row = 0
+    max_scan = min(10, len(tmp))
     for i in range(max_scan):
-        row_vals = [str(v).lower() for v in raw.iloc[i].tolist()]
-        has_prod = any(any(k in v for k in prod_keywords) for v in row_vals)
-        has_cat = any(any(k in v for k in cat_keywords) for v in row_vals)
-        has_qty = any(any(k in v for k in qty_keywords) for v in row_vals)
-        has_sales = any(any(k in v for k in sales_keywords) for v in row_vals)
-
-        # Accept if row clearly looks like a product-level header
-        if has_prod and (has_cat or has_qty or has_sales):
-            header_row_idx = i
+        row_text = " ".join(str(v) for v in tmp.iloc[i].tolist()).lower()
+        if any(tok in row_text for tok in ["product", "item", "sku", "name"]):
+            header_row = i
             break
-
-    if header_row_idx is None:
-        header_row_idx = 0
-
-    header = raw.iloc[header_row_idx].astype(str).str.strip()
-    df = raw.iloc[header_row_idx + 1 :].copy()
-    df.columns = header
-    df = df.reset_index(drop=True)
+    uploaded_file.seek(0)
+    df = pd.read_csv(uploaded_file, header=header_row)
     return df
+
+
+def read_sales_file(uploaded_file):
+    """
+    Read Excel sales report with smart header detection.
+    Looks for a row that contains something like 'category' and 'product'
+    (Dutchie 'Total Sales by Product' style) and uses that as the header.
+    """
+    uploaded_file.seek(0)
+    tmp = pd.read_excel(uploaded_file, header=None)
+    header_row = 0
+    max_scan = min(15, len(tmp))
+    for i in range(max_scan):
+        row_text = " ".join(str(v) for v in tmp.iloc[i].tolist()).lower()
+        if "category" in row_text and ("product" in row_text or "name" in row_text):
+            header_row = i
+            break
+    uploaded_file.seek(0)
+    df = pd.read_excel(uploaded_file, header=header_row)
+    return df
+
 
 # =========================
 # PDF GENERATION FOR PO
@@ -336,16 +350,19 @@ def generate_po_pdf(
     right_margin = width - 0.7 * inch
     top_margin = height - 0.75 * inch
 
+    # Header Title
     y = top_margin
     c.setFont("Helvetica-Bold", 16)
     c.drawString(left_margin, y, f"{CLIENT_NAME} - Purchase Order")
     y -= 0.25 * inch
 
+    # PO Number and Date
     c.setFont("Helvetica", 10)
     c.drawString(left_margin, y, f"PO Number: {po_number}")
     c.drawRightString(right_margin, y, f"Date: {po_date.strftime('%m/%d/%Y')}")
     y -= 0.35 * inch
 
+    # Store (Ship-To) block
     c.setFont("Helvetica-Bold", 11)
     c.drawString(left_margin, y, "Ship To:")
     c.setFont("Helvetica", 10)
@@ -365,6 +382,7 @@ def generate_po_pdf(
         c.drawString(left_margin, y, f"Buyer: {store_contact}")
         y -= 0.2 * inch
 
+    # Vendor block
     vend_y = top_margin - 0.35 * inch
     c.setFont("Helvetica-Bold", 11)
     c.drawString(width / 2, vend_y, "Vendor:")
@@ -383,6 +401,7 @@ def generate_po_pdf(
         c.drawString(width / 2, vend_y, f"Contact: {vendor_contact}")
         vend_y -= 0.2 * inch
 
+    # Terms
     y = min(y, vend_y) - 0.15 * inch
     if terms:
         c.setFont("Helvetica-Bold", 10)
@@ -391,6 +410,7 @@ def generate_po_pdf(
         c.drawString(left_margin + 90, y, terms)
         y -= 0.25 * inch
 
+    # Notes
     if notes:
         c.setFont("Helvetica-Bold", 10)
         c.drawString(left_margin, y, "Notes:")
@@ -404,6 +424,7 @@ def generate_po_pdf(
         c.drawText(text_obj)
         y = text_obj.getY() - 0.25 * inch
 
+    # Table header
     c.setFont("Helvetica-Bold", 10)
     header_y = y
     if header_y < 2.5 * inch:
@@ -444,6 +465,7 @@ def generate_po_pdf(
     y -= 0.18 * inch
     c.setFont("Helvetica", 9)
 
+    # Table rows
     for idx, row in po_df.reset_index(drop=True).iterrows():
         if y < 1.2 * inch:
             c.showPage()
@@ -454,6 +476,7 @@ def generate_po_pdf(
             c.setFont("Helvetica-Bold", 10)
             c.drawString(left_margin, y, "SKU Line Items (cont.)")
             y -= 0.25 * inch
+            c.setFont("Helvetica-Bold", 10)
             c.drawString(col_x["line"], y, "Ln")
             c.drawString(col_x["sku"], y, "SKU")
             c.drawString(col_x["desc"], y, "Description")
@@ -478,6 +501,7 @@ def generate_po_pdf(
         c.drawRightString(col_x["total"] + 0.8 * inch, y, f"${row.get('Line Total', 0):,.2f}")
         y -= 0.18 * inch
 
+    # Totals
     if y < 1.8 * inch:
         c.showPage()
         width, height = letter
@@ -507,9 +531,22 @@ def generate_po_pdf(
     buffer.close()
     return pdf
 
+
 # =========================
-# ADMIN + TRIAL GATE
+# 🔐 THEME TOGGLE + ADMIN + TRIAL GATE
 # =========================
+
+# Theme toggle in sidebar
+st.sidebar.markdown("### 🎨 Theme")
+theme_choice = st.sidebar.radio(
+    "Mode",
+    ["Dark", "Light"],
+    index=0 if st.session_state.theme == "Dark" else 1,
+)
+if theme_choice != st.session_state.theme:
+    st.session_state.theme = theme_choice
+    st.experimental_rerun()
+
 st.sidebar.markdown("### 👑 Admin Login")
 
 if not st.session_state.is_admin:
@@ -531,6 +568,7 @@ trial_now = datetime.now()
 
 if not st.session_state.is_admin:
     st.sidebar.markdown("### 🔐 Trial Access")
+
     if st.session_state.trial_start is None:
         trial_key_input = st.sidebar.text_input(
             "Enter trial key", type="password", key="trial_key_input"
@@ -590,27 +628,26 @@ section = st.sidebar.radio(
 # ============================================================
 if section == "📊 Inventory Dashboard":
 
+    # Data source selector (for future hooks)
     st.sidebar.markdown("### 🧩 Data Source")
     data_source = st.sidebar.selectbox(
         "Select POS / Data Source",
-        ["Dutchie", "BLAZE"],
+        ["BLAZE", "Dutchie"],
         index=0,
-        help="Changes how column names are interpreted. Files are still CSV/XLSX exports.",
+        help="Changes how column names are interpreted. Files are still just CSV/XLSX exports.",
     )
 
     st.sidebar.header("📂 Upload Core Reports")
+
     inv_file = st.sidebar.file_uploader("Inventory CSV", type=["csv"])
-
     product_sales_file = st.sidebar.file_uploader(
-        "Product Sales Report (POS export)",
-        type=["xlsx", "csv"],
-        help="Dutchie 'Product Sales' or Blaze sales export.",
+        "Product Sales Report (qty-based)", type=["xlsx"]
     )
-
-    sales_by_product_file = st.sidebar.file_uploader(
-        "Sales by Product / Total Sales by Product (optional)",
-        type=["xlsx", "csv"],
-        help="Dutchie 'Total Sales by Product' or Blaze 'Sales by Product'. Improves accuracy when present.",
+    extra_sales_file = st.sidebar.file_uploader(
+        "Optional Extra Sales Detail (revenue)",
+        type=["xlsx"],
+        help="Optional: Dutchie 'Total Sales by Product' or similar. "
+             "Currently **ignored for velocity** until revenue views are added.",
     )
 
     st.sidebar.markdown("---")
@@ -619,58 +656,50 @@ if section == "📊 Inventory Dashboard":
     velocity_adjustment = st.sidebar.number_input("Velocity Adjustment", 0.01, 5.0, 0.5)
     date_diff = st.sidebar.slider("Days in Sales Period", 7, 90, 60)
 
-    # Cache inventory
+    # Cache raw dataframes when new files are uploaded
     if inv_file is not None:
-        inv_df_raw = pd.read_csv(inv_file)
-        st.session_state.inv_raw_df = inv_df_raw
+        try:
+            inv_df_raw = read_inventory_file(inv_file)
+            st.session_state.inv_raw_df = inv_df_raw
+        except Exception as e:
+            st.error(f"Error reading inventory file: {e}")
+            st.stop()
 
-    # Decide which sales file to use (optional one overrides)
-    sales_source_file = None
-    if sales_by_product_file is not None:
-        sales_source_file = sales_by_product_file
-    elif product_sales_file is not None:
-        sales_source_file = product_sales_file
+    if product_sales_file is not None:
+        try:
+            sales_raw_raw = read_sales_file(product_sales_file)
+            st.session_state.sales_raw_df = sales_raw_raw
+        except Exception as e:
+            st.error(f"Error reading Product Sales report: {e}")
+            st.stop()
 
-    if sales_source_file is not None:
-        fname = sales_source_file.name.lower()
-        if fname.endswith(".csv"):
-            sales_raw_raw = pd.read_csv(sales_source_file)
-        else:
-            sales_raw_raw = read_sales_excel_with_header_detection(sales_source_file)
-        st.session_state.sales_raw_df = sales_raw_raw
+    if extra_sales_file is not None:
+        try:
+            extra_sales_raw = read_sales_file(extra_sales_file)
+            st.session_state.extra_sales_df = extra_sales_raw
+        except Exception:
+            # Not critical – we can ignore failures here
+            st.session_state.extra_sales_df = None
 
     if st.session_state.inv_raw_df is not None and st.session_state.sales_raw_df is not None:
         try:
             inv_df = st.session_state.inv_raw_df.copy()
             sales_raw = st.session_state.sales_raw_df.copy()
 
-            # ---------------- INVENTORY ----------------
+            # -------- INVENTORY --------
             inv_df.columns = inv_df.columns.str.strip().str.lower()
 
-            if data_source == "BLAZE":
-                inv_name_aliases = [
-                    "product", "productname", "item", "itemname", "name",
-                    "sku", "skuname", "product sku"
-                ]
-                inv_cat_aliases = [
-                    "category", "productcategory", "product category",
-                    "subcategory", "department"
-                ]
-                inv_qty_aliases = [
-                    "currentquantity", "current quantity", "onhand", "onhandunits",
-                    "quantity", "qty", "quantityonhand", "instock"
-                ]
-            else:  # Dutchie
-                inv_name_aliases = [
-                    "product", "productname", "name", "itemname", "sku name", "sku"
-                ]
-                inv_cat_aliases = [
-                    "category", "productcategory", "mastercategory", "subcategory"
-                ]
-                inv_qty_aliases = [
-                    "available", "onhand", "onhandunits", "inventory", "quantity",
-                    "qty", "instock"
-                ]
+            # Auto-detect core inventory columns (supports BLAZE & Dutchie)
+            inv_name_aliases = [
+                "product", "productname", "item", "itemname", "name", "skuname", "skuid"
+            ]
+            inv_cat_aliases = [
+                "category", "subcategory", "productcategory", "department", "mastercategory"
+            ]
+            inv_qty_aliases = [
+                "available", "onhand", "onhandunits", "quantity", "qty",
+                "quantityonhand", "instock", "currentquantity", "current quantity"
+            ]
 
             name_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_name_aliases])
             cat_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_cat_aliases])
@@ -678,7 +707,7 @@ if section == "📊 Inventory Dashboard":
 
             if not (name_col and cat_col and qty_col):
                 st.error(
-                    "Could not auto-detect inventory columns (product / category / on-hand).\n\n"
+                    "Could not auto-detect inventory columns (product / category / on-hand). "
                     "Check your Inventory export headers."
                 )
                 st.stop()
@@ -692,8 +721,10 @@ if section == "📊 Inventory Dashboard":
             )
 
             inv_df["onhandunits"] = pd.to_numeric(inv_df["onhandunits"], errors="coerce").fillna(0)
+            # normalize to Rebelle canonical categories
             inv_df["subcategory"] = inv_df["subcategory"].apply(normalize_rebelle_category)
 
+            # Strain Type + Package Size
             inv_df["strain_type"] = inv_df.apply(
                 lambda x: extract_strain_type(x["itemname"], x["subcategory"]), axis=1
             )
@@ -701,37 +732,54 @@ if section == "📊 Inventory Dashboard":
                 lambda x: extract_size(x["itemname"], x["subcategory"]), axis=1
             )
 
+            # Group inventory by subcategory + strain + size
             inv_summary = (
                 inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"]
                 .sum()
                 .reset_index()
             )
 
-            # ---------------- SALES ----------------
+            # -------- SALES (qty-based ONLY) --------
             sales_raw.columns = sales_raw.columns.astype(str).str.lower()
 
+            # Auto-detect product name column
             sales_name_aliases = [
-                "product", "productname", "product name", "item", "itemname",
-                "sku", "skuname", "sku name", "product sku", "description"
+                "product", "productname", "product title", "producttitle",
+                "productid", "name", "item", "itemname", "skuname",
+                "sku", "description"
             ]
             name_col_sales = detect_column(
                 sales_raw.columns, [normalize_col(a) for a in sales_name_aliases]
             )
 
+            # Auto-detect quantity/units sold column – STRICTLY counts, not $$
             qty_aliases = [
-                "quantitysold", "qtysold", "unitssold", "unitsold",
-                "units", "totalunits", "quantity", "quantity sold",
-                "itemssold", "items sold", "items_sold", "item_sold",
-                # last resort: revenue-style columns if no true qty present
-                "sales", "totalsales", "grosssales", "netsales"
+                "quantitysold", "quantity sold",
+                "qtysold", "qty sold",
+                "itemsold", "item sold", "items sold",
+                "unitssold", "units sold", "unit sold", "unitsold", "units",
+                "totalunits", "total units",
+                "quantity", "qty",
             ]
             qty_col_sales = detect_column(
                 sales_raw.columns, [normalize_col(a) for a in qty_aliases]
             )
 
+            # Extra safety: if the matched column is clearly a revenue column, reject it
+            if qty_col_sales is not None:
+                norm_qty_name = normalize_col(qty_col_sales)
+                revenue_like = {
+                    "sales", "netsales", "totalsales", "retailvalue",
+                    "grosssales", "saleamount"
+                }
+                if norm_qty_name in revenue_like:
+                    qty_col_sales = None
+
+            # Auto-detect category/mastercategory column
             mc_aliases = [
-                "mastercategory", "category", "master category",
-                "productcategory", "product category", "category name"
+                "mastercategory", "category", "master_category",
+                "productcategory", "product category",
+                "department", "dept", "subcategory"
             ]
             mc_col = detect_column(sales_raw.columns, [normalize_col(a) for a in mc_aliases])
 
@@ -740,11 +788,12 @@ if section == "📊 Inventory Dashboard":
                     "Product Sales file detected but could not find required columns.\n\n"
                     "Looked for some variant of: product / product name, quantity or items sold, "
                     "and category or product category.\n\n"
-                    "Tip: Use Dutchie 'Total Sales by Product' or Blaze 'Sales by Product' "
-                    "exports without manually editing the headers."
+                    "Tip: Use Dutchie 'Product Sales' or Blaze 'Sales by Product' exports "
+                    "without manually editing the headers."
                 )
                 st.stop()
 
+            # Normalize to internal names
             sales_raw = sales_raw.rename(
                 columns={
                     name_col_sales: "product_name",
@@ -757,18 +806,22 @@ if section == "📊 Inventory Dashboard":
                 sales_raw["unitssold"], errors="coerce"
             ).fillna(0)
 
+            # normalize categories here as well
             sales_raw["mastercategory"] = sales_raw["mastercategory"].apply(normalize_rebelle_category)
 
+            # Filter out accessories / 'all' (anything with "accessor")
             sales_df = sales_raw[
                 ~sales_raw["mastercategory"].astype(str).str.contains("accessor")
                 & (sales_raw["mastercategory"] != "all")
             ].copy()
 
+            # Add package size on the sales side (granular per size)
             sales_df["packagesize"] = sales_df.apply(
                 lambda row: extract_size(row["product_name"], row["mastercategory"]),
                 axis=1,
             )
 
+            # Category + size level velocity
             sales_summary = (
                 sales_df.groupby(["mastercategory", "packagesize"])["unitssold"]
                 .sum()
@@ -778,6 +831,7 @@ if section == "📊 Inventory Dashboard":
                 sales_summary["unitssold"] / date_diff
             ) * velocity_adjustment
 
+            # Merge inventory summary with size-level velocity
             detail = pd.merge(
                 inv_summary,
                 sales_summary,
@@ -786,9 +840,10 @@ if section == "📊 Inventory Dashboard":
                 right_on=["mastercategory", "packagesize"],
             ).fillna(0)
 
-            # Ensure 28g flower rows exist
+            # --- Ensure Flower 28g / 1oz always shows ---
             flower_mask = detail["subcategory"].str.contains("flower", na=False)
             flower_cats = detail.loc[flower_mask, "subcategory"].unique()
+
             missing_rows = []
             for cat in flower_cats:
                 if not ((detail["subcategory"] == cat) & (detail["packagesize"] == "28g")).any():
@@ -803,9 +858,11 @@ if section == "📊 Inventory Dashboard":
                             "avgunitsperday": 0,
                         }
                     )
+
             if missing_rows:
                 detail = pd.concat([detail, pd.DataFrame(missing_rows)], ignore_index=True)
 
+            # DOH + Reorder (granular per row)
             detail["daysonhand"] = np.where(
                 detail["avgunitsperday"] > 0,
                 detail["onhandunits"] / detail["avgunitsperday"],
@@ -835,7 +892,9 @@ if section == "📊 Inventory Dashboard":
 
             detail["reorderpriority"] = detail.apply(tag, axis=1)
 
+            # =======================
             # SUMMARY + CLICK FILTERS
+            # =======================
             st.markdown("### Inventory Summary")
 
             total_units = int(detail["unitssold"].sum())
@@ -855,12 +914,15 @@ if section == "📊 Inventory Dashboard":
                 ):
                     st.session_state.metric_filter = "Reorder ASAP"
 
+            # Apply metric filter to detail for display
             if st.session_state.metric_filter == "Reorder ASAP":
                 detail_view = detail[detail["reorderpriority"] == "1 – Reorder ASAP"].copy()
             else:
                 detail_view = detail.copy()
 
-            st.markdown(f"*Current filter:* **{st.session_state.metric_filter}**")
+            st.markdown(
+                f"*Current filter:* **{st.session_state.metric_filter}**"
+            )
 
             st.markdown("### Forecast Table")
 
@@ -871,6 +933,7 @@ if section == "📊 Inventory Dashboard":
                 except Exception:
                     return ""
 
+            # Category filter (ordered by Rebelle categories first) **after** metric filter
             all_cats = sorted(detail_view["subcategory"].unique())
 
             def cat_sort_key(c):
@@ -888,6 +951,7 @@ if section == "📊 Inventory Dashboard":
             )
             detail_view = detail_view[detail_view["subcategory"].isin(selected_cats)]
 
+            # Make sure cannabis type (strain_type) is visible
             display_cols = [
                 "mastercategory",
                 "subcategory",
@@ -902,6 +966,7 @@ if section == "📊 Inventory Dashboard":
             ]
             display_cols = [c for c in display_cols if c in detail_view.columns]
 
+            # Use same category ordering for expanders
             for cat in sorted(detail_view["subcategory"].unique(), key=cat_sort_key):
                 group = detail_view[detail_view["subcategory"] == cat]
                 with st.expander(cat.title()):
@@ -915,16 +980,23 @@ if section == "📊 Inventory Dashboard":
             st.error(f"Error: {e}")
 
     else:
-        st.info("Upload inventory + at least one sales file to continue.")
+        st.info("Upload inventory + product sales files to continue.")
 
 # ============================================================
 # PAGE 2 – PO BUILDER
 # ============================================================
 else:
     st.subheader("🧾 Purchase Order Builder")
-    st.markdown("The labels above each PO field are white on the dark background for clarity.")
 
+    st.markdown(
+        "The words above each PO field are white on the dark background for clarity."
+    )
+
+    # -------------------------
+    # HEADER INFO
+    # -------------------------
     st.markdown("### PO Header")
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -969,11 +1041,15 @@ else:
     notes = st.text_area("", "", height=70, key="notes")
 
     st.markdown("---")
+
+    # -------------------------
+    # LINE ITEMS
+    # -------------------------
     st.markdown("### Line Items")
 
     num_lines = st.number_input("Number of Line Items", 1, 50, 5)
-    items = []
 
+    items = []
     for i in range(int(num_lines)):
         with st.expander(f"Line {i + 1}", expanded=(i < 3)):
             c1, c2, c3, c4, c5, c6 = st.columns([1.2, 2.5, 1.4, 1.2, 1.2, 1.3])
@@ -1019,14 +1095,18 @@ else:
 
     po_df = pd.DataFrame(items)
     po_df = po_df[
-        (po_df["SKU"].astype(str).str.strip() != "")
-        | (po_df["Description"].astype(str).str.strip() != "")
-        | (po_df["Qty"] > 0)
+        (po_df["SKU"].astype(str).str.strip() != "") |
+        (po_df["Description"].astype(str).str.strip() != "") |
+        (po_df["Qty"] > 0)
     ]
 
     st.markdown("---")
 
+    # -------------------------
+    # TOTALS + PDF EXPORT
+    # -------------------------
     if not po_df.empty:
+
         subtotal = float(po_df["Line Total"].sum())
 
         c1, c2, c3 = st.columns(3)
@@ -1083,6 +1163,7 @@ else:
             file_name=f"PO_{po_number or 'rebelle'}.pdf",
             mime="application/pdf",
         )
+
     else:
         st.info("Add at least one line item to generate totals and PDF.")
 
