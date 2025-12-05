@@ -19,6 +19,31 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
+# ------------------------------------------------------------
+# OPTIONAL / SAFE IMPORT FOR GOOGLE SHEETS (VENDOR AUTOSAVE)
+# ------------------------------------------------------------
+GOOGLE_SHEETS_ENABLED = False
+VENDOR_WS = None
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    # Expect these in Streamlit secrets:
+    # [gcp_service_account]  (JSON block)
+    # VENDOR_SHEET_ID = "....."
+    if "gcp_service_account" in st.secrets and "VENDOR_SHEET_ID" in st.secrets:
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"], scopes=scopes
+        )
+        gc = gspread.authorize(creds)
+        VENDOR_WS = gc.open_by_key(st.secrets["VENDOR_SHEET_ID"]).sheet1
+        GOOGLE_SHEETS_ENABLED = True
+except Exception:
+    GOOGLE_SHEETS_ENABLED = False
+    VENDOR_WS = None
+
 # =========================
 # CONFIG & BRANDING
 # =========================
@@ -45,6 +70,18 @@ REB_CATEGORIES = [
     "concentrates",
     "tinctures",
     "topicals",
+]
+
+# Vendor table expected columns
+VENDOR_COLUMNS = [
+    "Vendor",
+    "Brands",
+    "Spotlight Products",
+    "Contact Name",
+    "Email",
+    "Phone",
+    "Net Terms",
+    "Notes",
 ]
 
 # Tab icon (favicon)
@@ -79,18 +116,9 @@ if "inv_raw_df" not in st.session_state:
 if "sales_raw_df" not in st.session_state:
     st.session_state.sales_raw_df = None
 if "vendor_df" not in st.session_state:
-    st.session_state.vendor_df = pd.DataFrame(
-        columns=[
-            "Vendor",
-            "Brands",
-            "Spotlight Products",
-            "Contact Name",
-            "Email",
-            "Phone",
-            "Net Terms",
-            "Notes",
-        ]
-    )
+    st.session_state.vendor_df = pd.DataFrame(columns=VENDOR_COLUMNS)
+if "vendor_loaded" not in st.session_state:
+    st.session_state.vendor_loaded = False
 if "theme" not in st.session_state:
     st.session_state.theme = "Dark"
 
@@ -125,12 +153,10 @@ if theme == "Dark":
         color: #ffffff !important;
     }}
 
-    /* Main content text */
     .block-container *:not(input):not(textarea):not(select) {{
         color: #ffffff !important;
     }}
 
-    /* Tables */
     .dataframe td {{
         color: #ffffff !important;
     }}
@@ -154,7 +180,6 @@ if theme == "Dark":
         color: #ffffff !important;
     }}
 
-    /* Sidebar remains light for clarity */
     [data-testid="stSidebar"] {{
         background-color: #f5f5f5 !important;
     }}
@@ -187,12 +212,10 @@ else:
         color: #111111 !important;
     }}
 
-    /* Main content text */
     .block-container *:not(input):not(textarea):not(select) {{
         color: #111111 !important;
     }}
 
-    /* Tables */
     .dataframe td {{
         color: #111111 !important;
     }}
@@ -256,39 +279,24 @@ def normalize_rebelle_category(raw):
     """Map similar names to canonical Rebelle categories."""
     s = str(raw).lower().strip()
 
-    # Flower
     if any(k in s for k in ["flower", "bud", "buds", "cannabis flower"]):
         return "flower"
-
-    # Pre Rolls
     if any(k in s for k in ["pre roll", "preroll", "pre-roll", "joint", "joints"]):
         return "pre rolls"
-
-    # Vapes
     if any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"]):
         return "vapes"
-
-    # Edibles
     if any(k in s for k in ["edible", "gummy", "chocolate", "chew", "cookies"]):
         return "edibles"
-
-    # Beverages
     if any(k in s for k in ["beverage", "drink", "drinkable", "shot", "beverages"]):
         return "beverages"
-
-    # Concentrates
     if any(k in s for k in ["concentrate", "wax", "shatter", "crumble", "resin", "rosin", "dab"]):
         return "concentrates"
-
-    # Tinctures
     if any(k in s for k in ["tincture", "tinctures", "drops", "sublingual", "dropper"]):
         return "tinctures"
-
-    # Topicals
     if any(k in s for k in ["topical", "lotion", "cream", "salve", "balm"]):
         return "topicals"
 
-    return s  # unchanged if not matched
+    return s
 
 def extract_strain_type(name, subcat):
     s = str(name).lower()
@@ -302,15 +310,12 @@ def extract_strain_type(name, subcat):
     elif "cbd" in s:
         base = "cbd"
 
-    # Recognize vapes / pens
     vape = any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"])
     preroll = any(k in s for k in ["pre roll", "preroll", "pre-roll", "joint"])
 
-    # Disposables (vapes)
     if ("disposable" in s or "dispos" in s) and vape:
         return base + " disposable" if base != "unspecified" else "disposable"
 
-    # Infused pre-rolls
     if "infused" in s and preroll:
         return base + " infused" if base != "unspecified" else "infused"
 
@@ -319,12 +324,10 @@ def extract_strain_type(name, subcat):
 def extract_size(text, context=None):
     s = str(text).lower()
 
-    # mg doses
     mg = re.search(r"(\d+(\.\d+)?\s?mg)", s)
     if mg:
         return mg.group(1).replace(" ", "")
 
-    # grams / ounces: normalize 1oz/1 oz/28g to "28g"
     g = re.search(r"((?:\d+\.?\d*|\.\d+)\s?(g|oz))", s)
     if g:
         val = g.group(1).replace(" ", "")
@@ -333,7 +336,6 @@ def extract_size(text, context=None):
             return "28g"
         return val_lower
 
-    # 0.5g style vapes (if "vape", "cart", "pen", "pod" appears)
     if any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"]):
         half = re.search(r"\b0\.5\b|\b\.5\b", s)
         if half:
@@ -373,19 +375,16 @@ def generate_po_pdf(
     right_margin = width - 0.7 * inch
     top_margin = height - 0.75 * inch
 
-    # Header Title
     y = top_margin
     c.setFont("Helvetica-Bold", 16)
     c.drawString(left_margin, y, f"{CLIENT_NAME} - Purchase Order")
     y -= 0.25 * inch
 
-    # PO Number and Date
     c.setFont("Helvetica", 10)
     c.drawString(left_margin, y, f"PO Number: {po_number}")
     c.drawRightString(right_margin, y, f"Date: {po_date.strftime('%m/%d/%Y')}")
     y -= 0.35 * inch
 
-    # Store (Ship-To) block
     c.setFont("Helvetica-Bold", 11)
     c.drawString(left_margin, y, "Ship To:")
     c.setFont("Helvetica", 10)
@@ -405,7 +404,6 @@ def generate_po_pdf(
         c.drawString(left_margin, y, f"Buyer: {store_contact}")
         y -= 0.2 * inch
 
-    # Vendor block
     vend_y = top_margin - 0.35 * inch
     c.setFont("Helvetica-Bold", 11)
     c.drawString(width / 2, vend_y, "Vendor:")
@@ -424,7 +422,6 @@ def generate_po_pdf(
         c.drawString(width / 2, vend_y, f"Contact: {vendor_contact}")
         vend_y -= 0.2 * inch
 
-    # Terms
     y = min(y, vend_y) - 0.15 * inch
     if terms:
         c.setFont("Helvetica-Bold", 10)
@@ -433,7 +430,6 @@ def generate_po_pdf(
         c.drawString(left_margin + 90, y, terms)
         y -= 0.25 * inch
 
-    # Notes
     if notes:
         c.setFont("Helvetica-Bold", 10)
         c.drawString(left_margin, y, "Notes:")
@@ -447,7 +443,6 @@ def generate_po_pdf(
         c.drawText(text_obj)
         y = text_obj.getY() - 0.25 * inch
 
-    # Table header
     c.setFont("Helvetica-Bold", 10)
     header_y = y
     if header_y < 2.5 * inch:
@@ -488,7 +483,6 @@ def generate_po_pdf(
     y -= 0.18 * inch
     c.setFont("Helvetica", 9)
 
-    # Table rows
     for idx, row in po_df.reset_index(drop=True).iterrows():
         if y < 1.2 * inch:
             c.showPage()
@@ -524,7 +518,6 @@ def generate_po_pdf(
         c.drawRightString(col_x["total"] + 0.8 * inch, y, f"${row.get('Line Total', 0):,.2f}")
         y -= 0.18 * inch
 
-    # Totals
     if y < 1.8 * inch:
         c.showPage()
         width, height = letter
@@ -611,6 +604,12 @@ if not st.session_state.is_admin:
             mins_left = int((remaining.total_seconds() % 3600) // 60)
             st.sidebar.info(f"⏰ Trial time remaining: {hours_left}h {mins_left}m")
 
+# Show vendor persistence status
+if GOOGLE_SHEETS_ENABLED:
+    st.sidebar.success("📒 Vendor autosave: Google Sheets connected")
+else:
+    st.sidebar.info("📒 Vendor autosave: in-memory only (configure Google Sheets in secrets to persist).")
+
 # =========================
 # HEADER
 # =========================
@@ -639,7 +638,6 @@ section = st.sidebar.radio(
 # ============================================================
 if section == "📊 Inventory Dashboard":
 
-    # Data source selector (for future hooks)
     st.sidebar.markdown("### 🧩 Data Source")
     data_source = st.sidebar.selectbox(
         "Select POS / Data Source",
@@ -660,7 +658,6 @@ if section == "📊 Inventory Dashboard":
 
     date_diff = st.sidebar.slider("Days in Sales Period", 7, 90, 60)
 
-    # Cache raw dataframes when new files are uploaded
     if inv_file is not None:
         inv_df_raw = pd.read_csv(inv_file)
         st.session_state.inv_raw_df = inv_df_raw
@@ -674,10 +671,8 @@ if section == "📊 Inventory Dashboard":
             inv_df = st.session_state.inv_raw_df.copy()
             sales_raw = st.session_state.sales_raw_df.copy()
 
-            # -------- INVENTORY --------
             inv_df.columns = inv_df.columns.str.strip().str.lower()
 
-            # Auto-detect core inventory columns (supports BLAZE & Dutchie)
             inv_name_aliases = [
                 "product", "productname", "item", "itemname", "name", "skuname", "skuid"
             ]
@@ -709,10 +704,8 @@ if section == "📊 Inventory Dashboard":
             )
 
             inv_df["onhandunits"] = pd.to_numeric(inv_df["onhandunits"], errors="coerce").fillna(0)
-            # normalize to Rebelle canonical categories
             inv_df["subcategory"] = inv_df["subcategory"].apply(normalize_rebelle_category)
 
-            # Strain Type + Package Size
             inv_df["strain_type"] = inv_df.apply(
                 lambda x: extract_strain_type(x["itemname"], x["subcategory"]), axis=1
             )
@@ -720,17 +713,14 @@ if section == "📊 Inventory Dashboard":
                 lambda x: extract_size(x["itemname"], x["subcategory"]), axis=1
             )
 
-            # Group inventory by subcategory + strain + size
             inv_summary = (
                 inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"]
                 .sum()
                 .reset_index()
             )
 
-            # -------- SALES --------
             sales_raw.columns = sales_raw.columns.astype(str).str.lower()
 
-            # Auto-detect product name column
             sales_name_aliases = [
                 "product", "productname", "producttitle", "productid", "name",
                 "item", "itemname", "skuname", "sku", "description"
@@ -739,7 +729,6 @@ if section == "📊 Inventory Dashboard":
                 sales_raw.columns, [normalize_col(a) for a in sales_name_aliases]
             )
 
-            # Auto-detect quantity/units sold column
             qty_aliases = [
                 "quantitysold", "qtysold", "unitssold", "unitsold",
                 "units", "totalunits", "quantity"
@@ -748,7 +737,6 @@ if section == "📊 Inventory Dashboard":
                 sales_raw.columns, [normalize_col(a) for a in qty_aliases]
             )
 
-            # Auto-detect category/mastercategory column
             mc_aliases = ["mastercategory", "category", "master_category", "productcategory"]
             mc_col = detect_column(sales_raw.columns, [normalize_col(a) for a in mc_aliases])
 
@@ -759,7 +747,6 @@ if section == "📊 Inventory Dashboard":
                 )
                 st.stop()
 
-            # Normalize to internal names
             sales_raw = sales_raw.rename(
                 columns={
                     name_col_sales: "product_name",
@@ -772,22 +759,18 @@ if section == "📊 Inventory Dashboard":
                 sales_raw["unitssold"], errors="coerce"
             ).fillna(0)
 
-            # normalize categories here as well
             sales_raw["mastercategory"] = sales_raw["mastercategory"].apply(normalize_rebelle_category)
 
-            # Filter out accessories / 'all' (anything with "accessor")
             sales_df = sales_raw[
                 ~sales_raw["mastercategory"].astype(str).str.contains("accessor")
                 & (sales_raw["mastercategory"] != "all")
             ].copy()
 
-            # Add package size on the sales side (granular per size)
             sales_df["packagesize"] = sales_df.apply(
                 lambda row: extract_size(row["product_name"], row["mastercategory"]),
                 axis=1,
             )
 
-            # Category + size level velocity
             sales_summary = (
                 sales_df.groupby(["mastercategory", "packagesize"])["unitssold"]
                 .sum()
@@ -797,7 +780,6 @@ if section == "📊 Inventory Dashboard":
                 sales_summary["unitssold"] / date_diff
             ) * velocity_adjustment
 
-            # Merge inventory summary with size-level velocity
             detail = pd.merge(
                 inv_summary,
                 sales_summary,
@@ -806,7 +788,6 @@ if section == "📊 Inventory Dashboard":
                 right_on=["mastercategory", "packagesize"],
             ).fillna(0)
 
-            # --- Ensure Flower 28g / 1oz always shows ---
             flower_mask = detail["subcategory"].str.contains("flower", na=False)
             flower_cats = detail.loc[flower_mask, "subcategory"].unique()
 
@@ -828,7 +809,6 @@ if section == "📊 Inventory Dashboard":
             if missing_rows:
                 detail = pd.concat([detail, pd.DataFrame(missing_rows)], ignore_index=True)
 
-            # DOH + Reorder (granular per row)
             detail["daysonhand"] = np.where(
                 detail["avgunitsperday"] > 0,
                 detail["onhandunits"] / detail["avgunitsperday"],
@@ -858,9 +838,6 @@ if section == "📊 Inventory Dashboard":
 
             detail["reorderpriority"] = detail.apply(tag, axis=1)
 
-            # =======================
-            # SUMMARY + CLICK FILTERS
-            # =======================
             st.markdown("### Inventory Summary")
 
             total_units = int(detail["unitssold"].sum())
@@ -880,15 +857,12 @@ if section == "📊 Inventory Dashboard":
                 ):
                     st.session_state.metric_filter = "Reorder ASAP"
 
-            # Apply metric filter to detail for display
             if st.session_state.metric_filter == "Reorder ASAP":
                 detail_view = detail[detail["reorderpriority"] == "1 – Reorder ASAP"].copy()
             else:
                 detail_view = detail.copy()
 
-            st.markdown(
-                f"*Current filter:* **{st.session_state.metric_filter}**"
-            )
+            st.markdown(f"*Current filter:* **{st.session_state.metric_filter}**")
 
             st.markdown("### Forecast Table")
 
@@ -899,7 +873,6 @@ if section == "📊 Inventory Dashboard":
                 except Exception:
                     return ""
 
-            # Category filter (ordered by Rebelle categories first) **after** metric filter
             all_cats = sorted(detail_view["subcategory"].unique())
 
             def cat_sort_key(c):
@@ -917,7 +890,6 @@ if section == "📊 Inventory Dashboard":
             )
             detail_view = detail_view[detail_view["subcategory"].isin(selected_cats)]
 
-            # Make sure cannabis type (strain_type) is visible
             display_cols = [
                 "mastercategory",
                 "subcategory",
@@ -932,7 +904,6 @@ if section == "📊 Inventory Dashboard":
             ]
             display_cols = [c for c in display_cols if c in detail_view.columns]
 
-            # Use same category ordering for expanders
             for cat in sorted(detail_view["subcategory"].unique(), key=cat_sort_key):
                 group = detail_view[detail_view["subcategory"] == cat]
                 with st.expander(cat.title()):
@@ -953,14 +924,10 @@ if section == "📊 Inventory Dashboard":
 # ============================================================
 elif section == "🧾 PO Builder":
     st.subheader("🧾 Purchase Order Builder")
-
     st.markdown(
         "The words above each PO field are adjusted for the current theme so they're readable."
     )
 
-    # -------------------------
-    # HEADER INFO
-    # -------------------------
     st.markdown("### PO Header")
 
     col1, col2 = st.columns(2)
@@ -1008,9 +975,6 @@ elif section == "🧾 PO Builder":
 
     st.markdown("---")
 
-    # -------------------------
-    # LINE ITEMS
-    # -------------------------
     st.markdown("### Line Items")
 
     num_lines = st.number_input("Number of Line Items", 1, 50, 5)
@@ -1068,9 +1032,6 @@ elif section == "🧾 PO Builder":
 
     st.markdown("---")
 
-    # -------------------------
-    # TOTALS + PDF EXPORT
-    # -------------------------
     if not po_df.empty:
 
         subtotal = float(po_df["Line Total"].sum())
@@ -1134,63 +1095,38 @@ elif section == "🧾 PO Builder":
         st.info("Add at least one line item to generate totals and PDF.")
 
 # ============================================================
-# PAGE 3 – VENDOR TRACKER
+# PAGE 3 – VENDOR TRACKER (WITH AUTOSAVE)
 # ============================================================
 else:  # 🤝 Vendor Tracker
     st.subheader("🤝 Vendor Tracking")
 
+    if GOOGLE_SHEETS_ENABLED and not st.session_state.vendor_loaded:
+        try:
+            records = VENDOR_WS.get_all_records()
+            if records:
+                df_up = pd.DataFrame(records)
+            else:
+                df_up = pd.DataFrame(columns=VENDOR_COLUMNS)
+
+            for c in VENDOR_COLUMNS:
+                if c not in df_up.columns:
+                    df_up[c] = ""
+            st.session_state.vendor_df = df_up[VENDOR_COLUMNS]
+            st.session_state.vendor_loaded = True
+        except Exception as e:
+            st.warning(f"Could not load vendors from Google Sheets: {e}")
+
     st.markdown(
-        "Use this page as a live vendor CRM: track **brands**, **spotlight SKUs**, "
+        "This page acts as a live vendor CRM: track **brands**, **spotlight SKUs**, "
         "**contacts**, **terms**, and buyer notes."
     )
 
-    st.markdown("### Import / Export")
+    if GOOGLE_SHEETS_ENABLED:
+        st.caption("✅ Autosave is ON (Google Sheets). Edits are saved automatically.")
+    else:
+        st.caption("⚠️ Autosave is session-only. Configure Google Sheets in secrets for persistence.")
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        uploaded_vendor_csv = st.file_uploader(
-            "Upload Vendor CSV (optional)",
-            type="csv",
-            key="vendor_upload",
-            help="Columns will be matched by name where possible.",
-        )
-        if uploaded_vendor_csv is not None:
-            try:
-                df_up = pd.read_csv(uploaded_vendor_csv)
-                # Ensure we at least have all expected columns
-                expected_cols = [
-                    "Vendor",
-                    "Brands",
-                    "Spotlight Products",
-                    "Contact Name",
-                    "Email",
-                    "Phone",
-                    "Net Terms",
-                    "Notes",
-                ]
-                for c in expected_cols:
-                    if c not in df_up.columns:
-                        df_up[c] = ""
-                st.session_state.vendor_df = df_up[expected_cols]
-                st.success("Vendor table loaded from CSV.")
-            except Exception as e:
-                st.error(f"Error loading CSV: {e}")
-
-    with col_b:
-        csv_data = st.session_state.vendor_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "📥 Download Vendor Table (CSV)",
-            data=csv_data,
-            file_name="vendor_tracker_rebelle.csv",
-            mime="text/csv",
-        )
-
-    st.markdown("---")
     st.markdown("### Vendor Table")
-
-    st.markdown(
-        "Edit cells directly, add/remove rows, and then download as CSV to save your work."
-    )
 
     edited_df = st.data_editor(
         st.session_state.vendor_df,
@@ -1198,8 +1134,36 @@ else:  # 🤝 Vendor Tracker
         use_container_width=True,
     )
 
-    # Save changes back to session state
-    st.session_state.vendor_df = edited_df
+    # Normalize columns
+    for c in VENDOR_COLUMNS:
+        if c not in edited_df.columns:
+            edited_df[c] = ""
+    edited_df = edited_df[VENDOR_COLUMNS]
+
+    # If there were changes, update session + Google Sheets
+    if not edited_df.equals(st.session_state.vendor_df):
+        st.session_state.vendor_df = edited_df.copy()
+
+        if GOOGLE_SHEETS_ENABLED and VENDOR_WS is not None:
+            try:
+                VENDOR_WS.clear()
+                if not edited_df.empty:
+                    values = [edited_df.columns.tolist()] + edited_df.fillna("").astype(str).values.tolist()
+                    VENDOR_WS.update("A1", values)
+                st.caption("💾 Changes autosaved to Google Sheets.")
+            except Exception as e:
+                st.error(f"Error autosaving vendors to Google Sheets: {e}")
+
+    # Optional backup CSV download
+    st.markdown("---")
+    st.markdown("### Backup Export")
+    csv_data = st.session_state.vendor_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "📥 Download Vendor Table (CSV)",
+        data=csv_data,
+        file_name="vendor_tracker_rebelle.csv",
+        mime="text/csv",
+    )
 
 # =========================
 # FOOTER
