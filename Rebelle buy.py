@@ -45,6 +45,9 @@ st.set_page_config(
     page_title=APP_TITLE,
     layout="wide",
     page_icon=page_icon_url,
+
+st.sidebar.write("DEBUG SECRETS:", st.secrets)
+
 )
 
 # Background image
