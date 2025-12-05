@@ -319,6 +319,39 @@ def extract_size(text, context=None):
 
     return "unspecified"
 
+def ensure_header_row(df: pd.DataFrame, alias_candidates, max_search_rows: int = 8) -> pd.DataFrame:
+    """
+    Some POS exports put metadata in the top 4–5 rows and the real header later.
+    This scans the first few rows, looks for a row that matches any of the known
+    column aliases, and promotes that row to header.
+    """
+    alias_norm = {normalize_col(a) for a in alias_candidates}
+    header_idx = None
+    max_rows = min(max_search_rows, len(df))
+
+    for i in range(max_rows):
+        row = df.iloc[i]
+        hits = 0
+        for v in row.values:
+            if normalize_col(v) in alias_norm:
+                hits += 1
+        # Require at least 2 header-like cells in the row so we don't false-positive
+        if hits >= 2:
+            header_idx = i
+            break
+
+    if header_idx is None:
+        # Fallback: assume first row is header
+        header = df.iloc[0].astype(str)
+        df = df.iloc[1:].reset_index(drop=True)
+        df.columns = header
+        return df
+
+    header = df.iloc[header_idx].astype(str)
+    df = df.iloc[header_idx + 1 :].reset_index(drop=True)
+    df.columns = header
+    return df
+
 # =========================
 # PDF GENERATION FOR PO
 # =========================
@@ -650,6 +683,7 @@ if section == "📊 Inventory Dashboard":
 
     st.sidebar.header("📂 Upload Core Reports")
 
+    # Read with header=None so we can detect real header row (metadata-safe)
     inv_file = st.sidebar.file_uploader("Inventory CSV", type="csv")
     product_sales_file = st.sidebar.file_uploader("Product Sales Report", type="xlsx")
 
@@ -660,13 +694,13 @@ if section == "📊 Inventory Dashboard":
 
     date_diff = st.sidebar.slider("Days in Sales Period", 7, 90, 60)
 
-    # Cache raw dataframes when new files are uploaded
+    # Cache raw dataframes when new files are uploaded (no header yet)
     if inv_file is not None:
-        inv_df_raw = pd.read_csv(inv_file)
+        inv_df_raw = pd.read_csv(inv_file, header=None)
         st.session_state.inv_raw_df = inv_df_raw
 
     if product_sales_file is not None:
-        sales_raw_raw = pd.read_excel(product_sales_file)
+        sales_raw_raw = pd.read_excel(product_sales_file, header=None)
         st.session_state.sales_raw_df = sales_raw_raw
 
     if st.session_state.inv_raw_df is not None and st.session_state.sales_raw_df is not None:
@@ -675,19 +709,30 @@ if section == "📊 Inventory Dashboard":
             sales_raw = st.session_state.sales_raw_df.copy()
 
             # -------- INVENTORY --------
-            inv_df.columns = inv_df.columns.str.strip().str.lower()
-
-            # Auto-detect core inventory columns (supports BLAZE & Dutchie)
+            # Expanded alias lists for inventory (product / category / on-hand)
             inv_name_aliases = [
-                "product", "productname", "item", "itemname", "name", "skuname", "skuid"
+                "product", "product name", "productname", "item", "item name", "itemname",
+                "name", "sku name", "skuname", "sku", "skuid", "description", "product description"
             ]
             inv_cat_aliases = [
-                "category", "subcategory", "productcategory", "department", "mastercategory"
+                "category", "category name", "subcategory", "sub category", "product category",
+                "productcategory", "department", "dept", "master category", "mastercategory",
+                "category1", "category 1", "product type", "producttype", "line"
             ]
             inv_qty_aliases = [
-                "available", "onhand", "onhandunits", "quantity", "qty", "quantityonhand",
-                "instock"
+                "available", "available units", "available quantity", "on hand", "on hand units",
+                "onhand", "onhandunits", "onhand units", "stock on hand", "stockonhand",
+                "instock", "in stock", "quantity", "qty", "quantity on hand", "quantityonhand",
+                "qoh", "inventory", "current inventory", "units in stock"
             ]
+
+            inv_df = ensure_header_row(
+                inv_df,
+                alias_candidates=inv_name_aliases + inv_cat_aliases + inv_qty_aliases,
+                max_search_rows=8,
+            )
+
+            inv_df.columns = inv_df.columns.astype(str).str.strip().str.lower()
 
             name_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_name_aliases])
             cat_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_cat_aliases])
@@ -695,8 +740,11 @@ if section == "📊 Inventory Dashboard":
 
             if not (name_col and cat_col and qty_col):
                 st.error(
-                    "Could not auto-detect inventory columns (product / category / on-hand). "
-                    "Check your Inventory export headers."
+                    "Inventory file detected but could not find required columns.\n\n"
+                    f"**Looked for product/name variants:** {', '.join(inv_name_aliases)}\n\n"
+                    f"**Looked for category variants:** {', '.join(inv_cat_aliases)}\n\n"
+                    f"**Looked for quantity/on-hand variants:** {', '.join(inv_qty_aliases)}\n\n"
+                    f"**Columns in your file after header detection:** {', '.join(map(str, inv_df.columns))}"
                 )
                 st.stop()
 
@@ -728,34 +776,52 @@ if section == "📊 Inventory Dashboard":
             )
 
             # -------- SALES --------
+            # Expanded alias lists for product sales (name / qty sold / category)
+            sales_name_aliases = [
+                "product", "product name", "productname", "product title", "producttitle",
+                "product id", "productid", "name", "item", "item name", "itemname",
+                "sku name", "skuname", "sku", "description", "product description"
+            ]
+            qty_aliases = [
+                "quantity sold", "quantity_sold", "quantitysold", "qty sold", "qty_sold",
+                "qtysold", "qty", "sold", "units sold", "unitssold", "unitsold",
+                "sales units", "salesunits", "total units", "totalunits", "total sold",
+                "totalsold", "sold units", "soldunits", "units"
+            ]
+            mc_aliases = [
+                "mastercategory", "master category", "category", "category name",
+                "productcategory", "product category", "product category (master)",
+                "department", "dept", "product type", "producttype", "class", "class name",
+                "category1", "category 1"
+            ]
+
+            sales_raw = ensure_header_row(
+                sales_raw,
+                alias_candidates=sales_name_aliases + qty_aliases + mc_aliases,
+                max_search_rows=8,
+            )
+
             sales_raw.columns = sales_raw.columns.astype(str).str.lower()
 
-            # Auto-detect product name column
-            sales_name_aliases = [
-                "product", "productname", "producttitle", "productid", "name",
-                "item", "itemname", "skuname", "sku", "description"
-            ]
             name_col_sales = detect_column(
                 sales_raw.columns, [normalize_col(a) for a in sales_name_aliases]
             )
 
-            # Auto-detect quantity/units sold column
-            qty_aliases = [
-                "quantitysold", "qtysold", "unitssold", "unitsold",
-                "units", "totalunits", "quantity"
-            ]
             qty_col_sales = detect_column(
                 sales_raw.columns, [normalize_col(a) for a in qty_aliases]
             )
 
-            # Auto-detect category/mastercategory column
-            mc_aliases = ["mastercategory", "category", "master_category", "productcategory"]
-            mc_col = detect_column(sales_raw.columns, [normalize_col(a) for a in mc_aliases])
+            mc_col = detect_column(
+                sales_raw.columns, [normalize_col(a) for a in mc_aliases]
+            )
 
             if not (name_col_sales and qty_col_sales and mc_col):
                 st.error(
-                    "Could not auto-detect required columns in Product Sales report "
-                    "(product / quantity / category). Check your export."
+                    "Product Sales file detected but could not find required columns.\n\n"
+                    f"**Looked for product/name variants:** {', '.join(sales_name_aliases)}\n\n"
+                    f"**Looked for quantity sold variants:** {', '.join(qty_aliases)}\n\n"
+                    f"**Looked for category/master category variants:** {', '.join(mc_aliases)}\n\n"
+                    f"**Columns in your file after header detection:** {', '.join(map(str, sales_raw.columns))}"
                 )
                 st.stop()
 
