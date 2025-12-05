@@ -10,16 +10,14 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 
-# ------------------------------------------------------------
-# OPTIONAL / SAFE IMPORTS
-# ------------------------------------------------------------
+# Optional Plotly
 try:
     import plotly.express as px
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-# Optional Google Sheets integration for Vendor Tracker
+# Optional Google Sheets for Vendor Tracker
 try:
     import gspread
     from google.oauth2.service_account import Credentials
@@ -74,8 +72,41 @@ background_url = (
 )
 
 # =========================
-# GLOBAL STYLING
+# THEME STATE + TOGGLE
 # =========================
+if "theme_mode" not in st.session_state:
+    st.session_state.theme_mode = "Dark"
+
+with st.sidebar:
+    theme_mode = st.radio(
+        "Theme",
+        ["Dark", "Light"],
+        index=0 if st.session_state.theme_mode == "Dark" else 1,
+    )
+st.session_state.theme_mode = theme_mode
+
+# =========================
+# GLOBAL STYLING (LIGHT / DARK)
+# =========================
+if theme_mode == "Dark":
+    main_bg = "rgba(0, 0, 0, 0.86)"
+    main_text = "#ffffff"
+    sidebar_bg = "#111111"
+    sidebar_text = "#f5f5f5"
+    input_bg_main = "#222222"
+    input_text_main = "#ffffff"
+    input_bg_sidebar = "#2b2b2b"
+    input_text_sidebar = "#ffffff"
+else:  # Light mode
+    main_bg = "rgba(255, 255, 255, 0.96)"
+    main_text = "#111111"
+    sidebar_bg = "#f5f5f5"
+    sidebar_text = "#111111"
+    input_bg_main = "#ffffff"
+    input_text_main = "#111111"
+    input_bg_sidebar = "#ffffff"
+    input_text_sidebar = "#111111"
+
 st.markdown(
     f"""
     <style>
@@ -87,23 +118,23 @@ st.markdown(
     }}
 
     .block-container {{
-        background-color: rgba(0, 0, 0, 0.80);
+        background-color: {main_bg};
         padding: 2rem;
         border-radius: 12px;
-        color: #ffffff !important;
+        color: {main_text} !important;
     }}
 
     .block-container *:not(input):not(textarea):not(select) {{
-        color: #ffffff !important;
+        color: {main_text} !important;
     }}
 
     .dataframe td {{
-        color: #ffffff !important;
+        color: {main_text} !important;
     }}
 
     .stButton>button {{
         background-color: rgba(255, 255, 255, 0.08);
-        color: #ffffff;
+        color: {main_text};
         border: 1px solid rgba(255, 255, 255, 0.8);
         border-radius: 6px;
     }}
@@ -117,18 +148,36 @@ st.markdown(
         font-size: 0.75rem;
         opacity: 0.7;
         margin-top: 2rem;
-        color: #ffffff !important;
+        color: {main_text} !important;
     }}
 
+    /* Sidebar */
     [data-testid="stSidebar"] {{
-        background-color: #f5f5f5 !important;
+        background-color: {sidebar_bg} !important;
     }}
     [data-testid="stSidebar"] * {{
-        color: #111111 !important;
+        color: {sidebar_text} !important;
     }}
 
+    /* Inputs in main panel */
+    .block-container input,
+    .block-container textarea,
+    .block-container select {{
+        background-color: {input_bg_main} !important;
+        color: {input_text_main} !important;
+    }}
+
+    /* Inputs in sidebar */
+    [data-testid="stSidebar"] input,
+    [data-testid="stSidebar"] textarea,
+    [data-testid="stSidebar"] select {{
+        background-color: {input_bg_sidebar} !important;
+        color: {input_text_sidebar} !important;
+    }}
+
+    /* PO-only labels */
     .po-label {{
-        color: #ffffff !important;
+        color: {main_text} !important;
         font-weight: 600;
         font-size: 0.9rem;
         margin-bottom: 0.1rem;
@@ -175,64 +224,70 @@ def detect_column(columns, aliases):
     return None
 
 
-def ensure_header_row(df: pd.DataFrame, alias_candidates, max_search_rows: int = 8):
+def reheader_from_first_match(df: pd.DataFrame, alias_samples) -> pd.DataFrame:
     """
-    Blaze and some POS exports put meta rows above the real header.
-    This scans the first `max_search_rows` rows and promotes the one
-    that looks most like a header (contains any alias candidate).
+    Some BLAZE exports have 3–5 rows of metadata before the real header.
+    Scan first 10 rows and, if a row looks like a header, promote it.
     """
-    if df is None or df.empty:
+    try:
+        # Work on a copy so we don’t mutate original unexpectedly
+        tmp = df.copy()
+        max_scan = min(10, len(tmp))
+        alias_norm = set(alias_samples)
+
+        for i in range(max_scan):
+            row = tmp.iloc[i]
+            # Normalize row cells as if they might be column names
+            row_norm = [normalize_col(v) for v in row.astype(str).tolist()]
+            if any(r in alias_norm for r in row_norm):
+                # This row looks like the header
+                new_header = tmp.iloc[i].astype(str).str.lower()
+                tmp = tmp.iloc[i + 1 :].reset_index(drop=True)
+                tmp.columns = new_header
+                return tmp
+        return tmp
+    except Exception:
+        # Fallback: return original DF untouched if anything goes weird
         return df
-
-    # Work on a copy
-    work = df.copy()
-    for i in range(min(max_search_rows, len(work))):
-        row = work.iloc[i].astype(str).str.lower().tolist()
-        # If any alias candidate shows up in this row, treat it as header
-        hits = 0
-        for cell in row:
-            for alias in alias_candidates:
-                if alias in cell:
-                    hits += 1
-                    break
-        if hits >= 2:  # at least 2 header-like cells
-            new_header = work.iloc[i]
-            work = work.iloc[i + 1 :].reset_index(drop=True)
-            work.columns = new_header
-            return work
-
-    return work
 
 
 def normalize_rebelle_category(raw):
     """Map similar names to canonical Rebelle categories."""
     s = str(raw).lower().strip()
 
+    # Flower
     if any(k in s for k in ["flower", "bud", "buds", "cannabis flower"]):
         return "flower"
 
+    # Pre Rolls
     if any(k in s for k in ["pre roll", "preroll", "pre-roll", "joint", "joints"]):
         return "pre rolls"
 
+    # Vapes
     if any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"]):
         return "vapes"
 
+    # Edibles
     if any(k in s for k in ["edible", "gummy", "chocolate", "chew", "cookies"]):
         return "edibles"
 
+    # Beverages
     if any(k in s for k in ["beverage", "drink", "drinkable", "shot", "beverages"]):
         return "beverages"
 
+    # Concentrates
     if any(k in s for k in ["concentrate", "wax", "shatter", "crumble", "resin", "rosin", "dab"]):
         return "concentrates"
 
+    # Tinctures
     if any(k in s for k in ["tincture", "tinctures", "drops", "sublingual", "dropper"]):
         return "tinctures"
 
+    # Topicals
     if any(k in s for k in ["topical", "lotion", "cream", "salve", "balm"]):
         return "topicals"
 
-    return s
+    return s  # unchanged if not matched
 
 
 def extract_strain_type(name, subcat):
@@ -247,12 +302,15 @@ def extract_strain_type(name, subcat):
     elif "cbd" in s:
         base = "cbd"
 
+    # Recognize vapes / pens
     vape = any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"])
     preroll = any(k in s for k in ["pre roll", "preroll", "pre-roll", "joint"])
 
+    # Disposables (vapes)
     if ("disposable" in s or "dispos" in s) and vape:
         return base + " disposable" if base != "unspecified" else "disposable"
 
+    # Infused pre-rolls
     if "infused" in s and preroll:
         return base + " infused" if base != "unspecified" else "infused"
 
@@ -262,10 +320,12 @@ def extract_strain_type(name, subcat):
 def extract_size(text, context=None):
     s = str(text).lower()
 
+    # mg doses
     mg = re.search(r"(\d+(\.\d+)?\s?mg)", s)
     if mg:
         return mg.group(1).replace(" ", "")
 
+    # grams / ounces: normalize 1oz/1 oz/28g to "28g"
     g = re.search(r"((?:\d+\.?\d*|\.\d+)\s?(g|oz))", s)
     if g:
         val = g.group(1).replace(" ", "")
@@ -274,12 +334,87 @@ def extract_size(text, context=None):
             return "28g"
         return val_lower
 
+    # 0.5g style vapes (if "vape", "cart", "pen", "pod" appears)
     if any(k in s for k in ["vape", "cart", "cartridge", "pen", "pod"]):
         half = re.search(r"\b0\.5\b|\b\.5\b", s)
         if half:
             return "0.5g"
 
     return "unspecified"
+
+
+# =========================
+# GOOGLE SHEETS HELPERS (Vendor Tracker)
+# =========================
+def get_vendor_sheet_client():
+    """Build a gspread client from Streamlit secrets, if configured."""
+    if not GSHEETS_AVAILABLE:
+        return None, None
+
+    if "gcp_service_account" not in st.secrets:
+        return None, None
+
+    svc_info = dict(st.secrets["gcp_service_account"])
+    vendor_sheet_id = svc_info.get("VENDOR_SHEET_ID") or st.secrets.get(
+        "VENDOR_SHEET_ID", None
+    )
+    if not vendor_sheet_id:
+        return None, None
+
+    creds = Credentials.from_service_account_info(
+        svc_info,
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ],
+    )
+    client = gspread.authorize(creds)
+    return client, vendor_sheet_id
+
+
+def load_vendor_sheet():
+    """Load vendor table from Google Sheets if configured, else None."""
+    try:
+        client, sheet_id = get_vendor_sheet_client()
+        if not client or not sheet_id:
+            return None
+
+        sh = client.open_by_key(sheet_id)
+        ws = sh.sheet1
+        data = ws.get_all_records()
+        if not data:
+            return pd.DataFrame(
+                columns=[
+                    "Vendor",
+                    "Available Brands",
+                    "Spotlight Products",
+                    "Contact Name",
+                    "Email",
+                    "Net Terms",
+                    "Notes",
+                ]
+            )
+        return pd.DataFrame(data)
+    except Exception:
+        return None
+
+
+def save_vendor_sheet(df: pd.DataFrame):
+    """Overwrite vendor sheet with current dataframe."""
+    try:
+        client, sheet_id = get_vendor_sheet_client()
+        if not client or not sheet_id:
+            return False
+
+        sh = client.open_by_key(sheet_id)
+        ws = sh.sheet1
+        ws.clear()
+        # Write headers + data
+        rows = [list(df.columns)] + df.astype(str).values.tolist()
+        ws.update("A1", rows)
+        return True
+    except Exception:
+        return False
 
 
 # =========================
@@ -314,16 +449,19 @@ def generate_po_pdf(
     right_margin = width - 0.7 * inch
     top_margin = height - 0.75 * inch
 
+    # Header Title
     y = top_margin
     c.setFont("Helvetica-Bold", 16)
     c.drawString(left_margin, y, f"{CLIENT_NAME} - Purchase Order")
     y -= 0.25 * inch
 
+    # PO Number and Date
     c.setFont("Helvetica", 10)
     c.drawString(left_margin, y, f"PO Number: {po_number}")
     c.drawRightString(right_margin, y, f"Date: {po_date.strftime('%m/%d/%Y')}")
     y -= 0.35 * inch
 
+    # Store (Ship-To) block
     c.setFont("Helvetica-Bold", 11)
     c.drawString(left_margin, y, "Ship To:")
     c.setFont("Helvetica", 10)
@@ -343,6 +481,7 @@ def generate_po_pdf(
         c.drawString(left_margin, y, f"Buyer: {store_contact}")
         y -= 0.2 * inch
 
+    # Vendor block
     vend_y = top_margin - 0.35 * inch
     c.setFont("Helvetica-Bold", 11)
     c.drawString(width / 2, vend_y, "Vendor:")
@@ -361,6 +500,7 @@ def generate_po_pdf(
         c.drawString(width / 2, vend_y, f"Contact: {vendor_contact}")
         vend_y -= 0.2 * inch
 
+    # Terms
     y = min(y, vend_y) - 0.15 * inch
     if terms:
         c.setFont("Helvetica-Bold", 10)
@@ -369,6 +509,7 @@ def generate_po_pdf(
         c.drawString(left_margin + 90, y, terms)
         y -= 0.25 * inch
 
+    # Notes
     if notes:
         c.setFont("Helvetica-Bold", 10)
         c.drawString(left_margin, y, "Notes:")
@@ -382,6 +523,7 @@ def generate_po_pdf(
         c.drawText(text_obj)
         y = text_obj.getY() - 0.25 * inch
 
+    # Table header
     c.setFont("Helvetica-Bold", 10)
     header_y = y
     if header_y < 2.5 * inch:
@@ -422,6 +564,7 @@ def generate_po_pdf(
     y -= 0.18 * inch
     c.setFont("Helvetica", 9)
 
+    # Table rows
     for idx, row in po_df.reset_index(drop=True).iterrows():
         if y < 1.2 * inch:
             c.showPage()
@@ -457,6 +600,7 @@ def generate_po_pdf(
         c.drawRightString(col_x["total"] + 0.8 * inch, y, f"${row.get('Line Total', 0):,.2f}")
         y -= 0.18 * inch
 
+    # Totals
     if y < 1.8 * inch:
         c.showPage()
         width, height = letter
@@ -488,112 +632,8 @@ def generate_po_pdf(
 
 
 # =========================
-# GOOGLE SHEETS HELPERS (VENDOR TRACKER)
-# =========================
-
-def get_vendor_sheet_id():
-    # Try root-level secret first
-    if "VENDOR_SHEET_ID" in st.secrets:
-        return st.secrets["VENDOR_SHEET_ID"]
-    # Or inside gcp_service_account block
-    try:
-        if "VENDOR_SHEET_ID" in st.secrets["gcp_service_account"]:
-            return st.secrets["gcp_service_account"]["VENDOR_SHEET_ID"]
-    except Exception:
-        pass
-    return None
-
-
-def load_vendor_data_from_sheets():
-    if not GSHEETS_AVAILABLE:
-        return None
-    if "gcp_service_account" not in st.secrets:
-        return None
-
-    sheet_id = get_vendor_sheet_id()
-    if not sheet_id:
-        return None
-
-    try:
-        sa_info = dict(st.secrets["gcp_service_account"])
-        credentials = Credentials.from_service_account_info(
-            sa_info,
-            scopes=[
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive",
-            ],
-        )
-        client = gspread.authorize(credentials)
-        sh = client.open_by_key(sheet_id)
-        ws = sh.sheet1
-        data = ws.get_all_records()
-        if not data:
-            return pd.DataFrame(
-                columns=[
-                    "Vendor",
-                    "Brands",
-                    "Spotlight Products",
-                    "Contact Name",
-                    "Contact Email",
-                    "Contact Phone",
-                    "Net Terms",
-                    "Notes",
-                ]
-            )
-        return pd.DataFrame(data)
-    except Exception:
-        return None
-
-
-def save_vendor_data_to_sheets(df: pd.DataFrame):
-    if not GSHEETS_AVAILABLE:
-        return
-    if "gcp_service_account" not in st.secrets:
-        return
-
-    sheet_id = get_vendor_sheet_id()
-    if not sheet_id:
-        return
-
-    try:
-        sa_info = dict(st.secrets["gcp_service_account"])
-        credentials = Credentials.from_service_account_info(
-            sa_info,
-            scopes=[
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive",
-            ],
-        )
-        client = gspread.authorize(credentials)
-        sh = client.open_by_key(sheet_id)
-        ws = sh.sheet1
-
-        if df.empty:
-            ws.clear()
-            ws.update("A1", [[
-                "Vendor",
-                "Brands",
-                "Spotlight Products",
-                "Contact Name",
-                "Contact Email",
-                "Contact Phone",
-                "Net Terms",
-                "Notes",
-            ]])
-            return
-
-        rows = [df.columns.tolist()] + df.astype(str).values.tolist()
-        ws.clear()
-        ws.update("A1", rows)
-    except Exception:
-        # Silently ignore; we don't want client-facing errors here
-        pass
-
-
-# =========================
 # 🔐 ADMIN + TRIAL GATE
 # =========================
-
 st.sidebar.markdown("### 👑 Admin Login")
 
 if not st.session_state.is_admin:
@@ -640,7 +680,9 @@ if not st.session_state.is_admin:
 
         if remaining.total_seconds() <= 0:
             st.sidebar.error("⛔ Trial expired. Please contact the vendor for full access.")
-            st.error("The 24-hour trial has expired. Contact the vendor to purchase a full license.")
+            st.error(
+                "The 24-hour trial has expired. Contact the vendor to purchase a full license."
+            )
             st.stop()
         else:
             hours_left = int(remaining.total_seconds() // 3600)
@@ -668,6 +710,7 @@ section = st.sidebar.radio(
     "App Section",
     ["📊 Inventory Dashboard", "🧾 PO Builder", "📒 Vendor Tracker"],
     index=0,
+    key="app_section",
 )
 
 # ============================================================
@@ -675,119 +718,79 @@ section = st.sidebar.radio(
 # ============================================================
 if section == "📊 Inventory Dashboard":
 
+    # Data source selector
     st.sidebar.markdown("### 🧩 Data Source")
     data_source = st.sidebar.selectbox(
         "Select POS / Data Source",
         ["BLAZE", "Dutchie"],
         index=0,
-        help="Changes how column names are interpreted. Files are still CSV/XLSX exports.",
+        help="Changes how column names are interpreted. Files are still just CSV/XLSX exports.",
     )
 
     st.sidebar.header("📂 Upload Core Reports")
-    inv_file = st.sidebar.file_uploader("Inventory CSV (e.g., Blaze Inventory Detail)", type="csv")
-    product_sales_file = st.sidebar.file_uploader(
-        "Product / Total Sales Report (XLSX)", type="xlsx"
-    )
+
+    inv_file = st.sidebar.file_uploader("Inventory CSV", type=["csv", "xlsx"])
+    product_sales_file = st.sidebar.file_uploader("Product Sales / Total Sales Detail", type=["xlsx", "csv"])
 
     st.sidebar.markdown("---")
     st.sidebar.header("⚙️ Forecast Settings")
     doh_threshold = st.sidebar.number_input("Target Days on Hand", 1, 60, 21)
     velocity_adjustment = st.sidebar.number_input("Velocity Adjustment", 0.01, 5.0, 0.5)
+
     date_diff = st.sidebar.slider("Days in Sales Period", 7, 90, 60)
 
+    # Cache raw dataframes when new files are uploaded
     if inv_file is not None:
-        inv_df_raw = pd.read_csv(inv_file)
+        if inv_file.name.lower().endswith(".xlsx"):
+            inv_df_raw = pd.read_excel(inv_file, header=None)
+        else:
+            inv_df_raw = pd.read_csv(inv_file, header=None)
         st.session_state.inv_raw_df = inv_df_raw
 
     if product_sales_file is not None:
-        sales_raw_raw = pd.read_excel(product_sales_file)
+        if product_sales_file.name.lower().endswith(".xlsx"):
+            sales_raw_raw = pd.read_excel(product_sales_file, header=None)
+        else:
+            sales_raw_raw = pd.read_csv(product_sales_file, header=None)
         st.session_state.sales_raw_df = sales_raw_raw
 
     if st.session_state.inv_raw_df is not None and st.session_state.sales_raw_df is not None:
         try:
-            inv_df = st.session_state.inv_raw_df.copy()
-            sales_raw = st.session_state.sales_raw_df.copy()
-
-            # ---------------- INVENTORY (with header row detection) ----------------
-            inv_cols_lower = [str(c).lower() for c in inv_df.columns]
-
-            if data_source == "BLAZE":
-                inv_name_aliases_human = [
-                    "product", "product name", "productname",
-                    "item", "item name", "itemname",
-                    "name", "sku name", "skuname", "sku", "skuid",
-                    "description", "product description",
-                ]
-                inv_cat_aliases_human = [
-                    "category", "category name",
-                    "subcategory", "sub category",
-                    "product category", "productcategory",
-                    "department", "dept",
-                    "master category", "mastercategory",
-                    "category1", "category 1",
-                    "product type", "producttype",
-                    "line",
-                ]
-                inv_qty_aliases_human = [
-                    "current quantity", "current qty", "currentquantity", "current qty.",
-                    "current inventory", "currentinventory",
-                    "available", "available units", "available quantity",
-                    "on hand", "on hand units",
-                    "onhand", "onhandunits", "onhand units",
-                    "stock on hand", "stockonhand",
-                    "instock", "in stock",
-                    "quantity", "qty",
-                    "quantity on hand", "quantityonhand",
-                    "qoh",
-                    "inventory", "units in stock",
-                ]
-            else:  # Dutchie / generic
-                inv_name_aliases_human = [
-                    "product", "product name", "item", "item name", "itemname",
-                    "name", "sku name", "skuname", "sku", "skuid",
-                    "description",
-                ]
-                inv_cat_aliases_human = [
-                    "category", "category name", "subcategory", "sub category",
-                    "department", "dept", "master category", "mastercategory",
-                    "product category", "productcategory",
-                ]
-                inv_qty_aliases_human = [
-                    "available", "available units", "available quantity",
-                    "on hand", "on hand units", "onhand", "onhandunits",
-                    "instock", "in stock", "quantity", "qty",
-                    "quantity on hand", "quantityonhand",
-                ]
-
-            inv_df = ensure_header_row(
-                inv_df,
-                alias_candidates=[
-                    normalize_col(a) for a in (
-                        inv_name_aliases_human + inv_cat_aliases_human + inv_qty_aliases_human
-                    )
-                ],
-                max_search_rows=8,
+            # --- Clean header rows for Blaze / mixed exports ---
+            inv_df = reheader_from_first_match(
+                st.session_state.inv_raw_df.copy(),
+                alias_samples=[normalize_col(a) for a in ["product", "product sku", "product name"]],
+            )
+            sales_raw = reheader_from_first_match(
+                st.session_state.sales_raw_df.copy(),
+                alias_samples=[normalize_col(a) for a in ["product", "product name", "product category", "quantity sold"]],
             )
 
+            # -------- INVENTORY --------
             inv_df.columns = inv_df.columns.astype(str).str.strip().str.lower()
 
-            name_col = detect_column(
-                inv_df.columns,
-                [normalize_col(a) for a in inv_name_aliases_human],
-            )
-            cat_col = detect_column(
-                inv_df.columns,
-                [normalize_col(a) for a in inv_cat_aliases_human],
-            )
-            qty_col = detect_column(
-                inv_df.columns,
-                [normalize_col(a) for a in inv_qty_aliases_human],
-            )
+            # Auto-detect core inventory columns (supports BLAZE & Dutchie)
+            inv_name_aliases = [
+                "product", "productname", "item", "itemname", "name", "skuname", "skuid",
+                "productsku", "sku"
+            ]
+            inv_cat_aliases = [
+                "category", "subcategory", "productcategory", "product category",
+                "department", "mastercategory", "producttype"
+            ]
+            inv_qty_aliases = [
+                "available", "onhand", "onhandunits", "quantity", "qty", "quantityonhand",
+                "instock", "currentquantity", "current quantity", "sold quantity"
+            ]
+
+            name_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_name_aliases])
+            cat_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_cat_aliases])
+            qty_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_qty_aliases])
 
             if not (name_col and cat_col and qty_col):
                 st.error(
-                    "Could not auto-detect inventory columns (product / category / on-hand).\n\n"
-                    f"Detected columns: {list(inv_df.columns)}"
+                    "Could not auto-detect inventory columns (product / category / on-hand). "
+                    "Check your Inventory Detail export headers."
                 )
                 st.stop()
 
@@ -800,8 +803,10 @@ if section == "📊 Inventory Dashboard":
             )
 
             inv_df["onhandunits"] = pd.to_numeric(inv_df["onhandunits"], errors="coerce").fillna(0)
+            # normalize to Rebelle canonical categories
             inv_df["subcategory"] = inv_df["subcategory"].apply(normalize_rebelle_category)
 
+            # Strain Type + Package Size
             inv_df["strain_type"] = inv_df.apply(
                 lambda x: extract_strain_type(x["itemname"], x["subcategory"]), axis=1
             )
@@ -809,95 +814,56 @@ if section == "📊 Inventory Dashboard":
                 lambda x: extract_size(x["itemname"], x["subcategory"]), axis=1
             )
 
+            # Group inventory by subcategory + strain + size
             inv_summary = (
                 inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"]
                 .sum()
                 .reset_index()
             )
 
-            # ---------------- SALES (with header row detection) ----------------
-            if data_source == "BLAZE":
-                sales_name_aliases_human = [
-                    "product name", "product", "productname",
-                    "name", "item", "item name", "itemname",
-                    "sku name", "skuname", "sku",
-                    "description", "product description",
-                ]
-                qty_aliases_human = [
-                    "quantity sold", "quantity_sold", "quantitysold",
-                    "qty sold", "qty_sold", "qtysold",
-                    "qty", "sold",
-                    "units sold", "units_sold", "unitssold", "unitsold",
-                    "sales units", "salesunits",
-                    "total units", "totalunits",
-                    "total sold", "totalsold",
-                    "sold units", "soldunits",
-                    "units",
-                ]
-                mc_aliases_human = [
-                    "product category", "productcategory",
-                    "category", "category name",
-                    "master category", "mastercategory",
-                    "department", "dept",
-                    "product type", "producttype",
-                    "class", "class name",
-                    "category1", "category 1",
-                ]
-            else:  # Dutchie / generic product sales report
-                sales_name_aliases_human = [
-                    "product", "product name", "productname",
-                    "item", "item name", "itemname",
-                    "sku name", "skuname", "sku",
-                    "description", "product description",
-                ]
-                qty_aliases_human = [
-                    "quantity sold", "quantity_sold", "quantitysold",
-                    "qty sold", "qty_sold", "qtysold",
-                    "qty", "sold",
-                    "units sold", "units_sold", "unitssold", "unitsold",
-                    "sales units", "salesunits",
-                    "total units", "totalunits",
-                    "total sold", "totalsold",
-                    "sold units", "soldunits",
-                ]
-                mc_aliases_human = [
-                    "mastercategory", "master category",
-                    "category", "category name",
-                    "product category", "productcategory",
-                    "department", "dept",
-                ]
-
-            sales_raw = ensure_header_row(
-                sales_raw,
-                alias_candidates=[
-                    normalize_col(a)
-                    for a in (sales_name_aliases_human + qty_aliases_human + mc_aliases_human)
-                ],
-                max_search_rows=8,
-            )
-
+            # -------- SALES --------
             sales_raw.columns = sales_raw.columns.astype(str).str.lower()
 
+            # Blaze "Total Sales Detail" hints
+            if data_source == "BLAZE":
+                # Try to force certain col names if they exist
+                # (but still rely on detect_column so it's flexible)
+                pass  # we just allow detect_column to do its job with Blaze-friendly aliases
+
+            # Auto-detect product name column
+            sales_name_aliases = [
+                "product", "productname", "product title", "producttitle", "product name",
+                "item", "itemname", "skuname", "sku", "description", "product sku"
+            ]
             name_col_sales = detect_column(
-                sales_raw.columns,
-                [normalize_col(a) for a in sales_name_aliases_human],
+                sales_raw.columns, [normalize_col(a) for a in sales_name_aliases]
             )
+
+            # Auto-detect quantity/units sold column
+            qty_aliases = [
+                "quantitysold", "quantity sold", "qtysold", "unitssold", "unitsold",
+                "units", "totalunits", "quantity", "quantity_sold", "qty", "sold quantity"
+            ]
             qty_col_sales = detect_column(
-                sales_raw.columns,
-                [normalize_col(a) for a in qty_aliases_human],
+                sales_raw.columns, [normalize_col(a) for a in qty_aliases]
             )
-            mc_col = detect_column(
-                sales_raw.columns,
-                [normalize_col(a) for a in mc_aliases_human],
-            )
+
+            # Auto-detect category/mastercategory column
+            mc_aliases = [
+                "mastercategory", "category", "master_category", "productcategory",
+                "product category"
+            ]
+            mc_col = detect_column(sales_raw.columns, [normalize_col(a) for a in mc_aliases])
 
             if not (name_col_sales and qty_col_sales and mc_col):
                 st.error(
-                    "Product Sales report missing a product name, quantity-sold, or category column.\n\n"
-                    f"Columns in your file: {list(sales_raw.columns)}"
+                    "Product Sales file detected but could not find required columns.\n\n"
+                    "Tried various forms of product name, category / product category, "
+                    "and quantity / quantity sold / units sold. Check your POS export headers."
                 )
                 st.stop()
 
+            # Normalize to internal names
             sales_raw = sales_raw.rename(
                 columns={
                     name_col_sales: "product_name",
@@ -910,20 +876,22 @@ if section == "📊 Inventory Dashboard":
                 sales_raw["unitssold"], errors="coerce"
             ).fillna(0)
 
-            sales_raw["mastercategory"] = sales_raw["mastercategory"].apply(
-                normalize_rebelle_category
-            )
+            # normalize categories here as well
+            sales_raw["mastercategory"] = sales_raw["mastercategory"].apply(normalize_rebelle_category)
 
+            # Filter out accessories / 'all' (anything with "accessor")
             sales_df = sales_raw[
                 ~sales_raw["mastercategory"].astype(str).str.contains("accessor")
                 & (sales_raw["mastercategory"] != "all")
             ].copy()
 
+            # Add package size on the sales side (granular per size)
             sales_df["packagesize"] = sales_df.apply(
                 lambda row: extract_size(row["product_name"], row["mastercategory"]),
                 axis=1,
             )
 
+            # Category + size level velocity
             sales_summary = (
                 sales_df.groupby(["mastercategory", "packagesize"])["unitssold"]
                 .sum()
@@ -933,6 +901,7 @@ if section == "📊 Inventory Dashboard":
                 sales_summary["unitssold"] / date_diff
             ) * velocity_adjustment
 
+            # Merge inventory summary with size-level velocity
             detail = pd.merge(
                 inv_summary,
                 sales_summary,
@@ -941,7 +910,7 @@ if section == "📊 Inventory Dashboard":
                 right_on=["mastercategory", "packagesize"],
             ).fillna(0)
 
-            # Ensure Flower 28g / 1oz always shows
+            # --- Ensure Flower 28g / 1oz always shows ---
             flower_mask = detail["subcategory"].str.contains("flower", na=False)
             flower_cats = detail.loc[flower_mask, "subcategory"].unique()
 
@@ -963,6 +932,7 @@ if section == "📊 Inventory Dashboard":
             if missing_rows:
                 detail = pd.concat([detail, pd.DataFrame(missing_rows)], ignore_index=True)
 
+            # DOH + Reorder (granular per row)
             detail["daysonhand"] = np.where(
                 detail["avgunitsperday"] > 0,
                 detail["onhandunits"] / detail["avgunitsperday"],
@@ -1014,12 +984,15 @@ if section == "📊 Inventory Dashboard":
                 ):
                     st.session_state.metric_filter = "Reorder ASAP"
 
+            # Apply metric filter to detail for display
             if st.session_state.metric_filter == "Reorder ASAP":
                 detail_view = detail[detail["reorderpriority"] == "1 – Reorder ASAP"].copy()
             else:
                 detail_view = detail.copy()
 
-            st.markdown(f"*Current filter:* **{st.session_state.metric_filter}**")
+            st.markdown(
+                f"*Current filter:* **{st.session_state.metric_filter}**"
+            )
 
             st.markdown("### Forecast Table")
 
@@ -1030,6 +1003,7 @@ if section == "📊 Inventory Dashboard":
                 except Exception:
                     return ""
 
+            # Category filter (ordered by Rebelle categories first) **after** metric filter
             all_cats = sorted(detail_view["subcategory"].unique())
 
             def cat_sort_key(c):
@@ -1047,6 +1021,7 @@ if section == "📊 Inventory Dashboard":
             )
             detail_view = detail_view[detail_view["subcategory"].isin(selected_cats)]
 
+            # Make sure cannabis type (strain_type) is visible
             display_cols = [
                 "mastercategory",
                 "subcategory",
@@ -1081,10 +1056,14 @@ if section == "📊 Inventory Dashboard":
 # ============================================================
 elif section == "🧾 PO Builder":
     st.subheader("🧾 Purchase Order Builder")
+
     st.markdown(
-        "The labels above each PO field are white on the dark background for clarity."
+        "The words above each PO field are styled for readability in both light and dark mode."
     )
 
+    # -------------------------
+    # HEADER INFO
+    # -------------------------
     st.markdown("### PO Header")
 
     col1, col2 = st.columns(2)
@@ -1131,6 +1110,10 @@ elif section == "🧾 PO Builder":
     notes = st.text_area("", "", height=70, key="notes")
 
     st.markdown("---")
+
+    # -------------------------
+    # LINE ITEMS
+    # -------------------------
     st.markdown("### Line Items")
 
     num_lines = st.number_input("Number of Line Items", 1, 50, 5)
@@ -1188,7 +1171,11 @@ elif section == "🧾 PO Builder":
 
     st.markdown("---")
 
+    # -------------------------
+    # TOTALS + PDF EXPORT
+    # -------------------------
     if not po_df.empty:
+
         subtotal = float(po_df["Line Total"].sum())
 
         c1, c2, c3 = st.columns(3)
@@ -1255,45 +1242,46 @@ elif section == "🧾 PO Builder":
 else:
     st.subheader("📒 Vendor Tracker")
 
-    # Load from Sheets once per session (if configured)
+    # Initialize vendor_df (from sheets or empty) once
     if st.session_state.vendor_df is None:
-        df = load_vendor_data_from_sheets()
-        if df is None or df.empty:
-            df = pd.DataFrame(
+        df_loaded = load_vendor_sheet()
+        if df_loaded is None or df_loaded.empty:
+            df_loaded = pd.DataFrame(
                 columns=[
                     "Vendor",
-                    "Brands",
+                    "Available Brands",
                     "Spotlight Products",
                     "Contact Name",
-                    "Contact Email",
-                    "Contact Phone",
+                    "Email",
                     "Net Terms",
                     "Notes",
                 ]
             )
-        st.session_state.vendor_df = df
-
-    vendor_df = st.session_state.vendor_df
+        st.session_state.vendor_df = df_loaded
 
     st.markdown(
-        "Use this table to track vendors, brands, spotlight SKUs, contacts, and terms. "
-        "Edits are autosaved."
+        "Use this table to track vendors, brands, contacts, net terms, and notes. "
+        "Changes are autosaved for this session and, if configured, to Google Sheets."
     )
 
     edited_df = st.data_editor(
-        vendor_df,
+        st.session_state.vendor_df,
         num_rows="dynamic",
         use_container_width=True,
     )
 
     st.session_state.vendor_df = edited_df
 
-    # Persist to Google Sheets if available & configured
-    if GSHEETS_AVAILABLE and "gcp_service_account" in st.secrets and get_vendor_sheet_id():
-        save_vendor_data_to_sheets(edited_df)
-        st.caption("✅ Vendor list autosaved to Google Sheets.")
+    # Try to save to Google Sheets if configured
+    saved_to_sheets = save_vendor_sheet(edited_df)
+
+    if saved_to_sheets:
+        st.info("Vendor list autosaved to Google Sheets.")
     else:
-        st.caption("📒 Vendor autosave is session-only (Google Sheets not configured).")
+        st.caption(
+            "Autosave is active for this session. Configure Google Sheets credentials in "
+            "Streamlit secrets to persist across sessions."
+        )
 
 # =========================
 # FOOTER
