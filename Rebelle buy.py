@@ -47,9 +47,6 @@ st.set_page_config(
     page_icon=page_icon_url,
 )
 
-# 🔍 DEBUG 1 – show what secrets are available
-st.sidebar.write("Secrets keys:", list(st.secrets.keys()))
-
 # Background image
 background_url = (
     "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
@@ -81,29 +78,34 @@ VENDOR_COLUMNS = [
 ]
 
 # ------------------------------------------------------------
-# OPTIONAL / SAFE IMPORT FOR GOOGLE SHEETS (VENDOR AUTOSAVE)
+# GOOGLE SHEETS (VENDOR AUTOSAVE) – EXPLICIT DEBUG
 # ------------------------------------------------------------
 GOOGLE_SHEETS_ENABLED = False
 VENDOR_WS = None
+GSHEETS_ERROR = None
 
 try:
     import gspread
     from google.oauth2.service_account import Credentials
-
-    if "gcp_service_account" in st.secrets and "VENDOR_SHEET_ID" in st.secrets:
-        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"], scopes=scopes
-        )
-        gc = gspread.authorize(creds)
-        VENDOR_WS = gc.open_by_key(st.secrets["VENDOR_SHEET_ID"]).sheet1
-        GOOGLE_SHEETS_ENABLED = True
-except Exception:
-    GOOGLE_SHEETS_ENABLED = False
-    VENDOR_WS = None
-
-# 🔍 DEBUG 2 – show if Google Sheets connected
-st.sidebar.write("GOOGLE_SHEETS_ENABLED:", GOOGLE_SHEETS_ENABLED)
+except Exception as e:
+    GSHEETS_ERROR = f"Import error (gspread/google-auth): {e}"
+else:
+    try:
+        if "gcp_service_account" in st.secrets and "VENDOR_SHEET_ID" in st.secrets:
+            scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+            creds = Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"], scopes=scopes
+            )
+            gc = gspread.authorize(creds)
+            VENDOR_WS = gc.open_by_key(st.secrets["VENDOR_SHEET_ID"]).sheet1
+            GOOGLE_SHEETS_ENABLED = True
+        else:
+            GSHEETS_ERROR = (
+                "Secrets missing 'gcp_service_account' or 'VENDOR_SHEET_ID'. "
+                f"Found keys: {list(st.secrets.keys())}"
+            )
+    except Exception as e:
+        GSHEETS_ERROR = f"Runtime error during Sheets setup: {e}"
 
 # =========================
 # SESSION STATE DEFAULTS
@@ -371,7 +373,7 @@ def generate_po_pdf(
     total,
 ):
     buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesizes=letter)
+    c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
 
     left_margin = 0.7 * inch
@@ -620,11 +622,13 @@ if not st.session_state.is_admin:
             mins_left = int((remaining.total_seconds() % 3600) // 60)
             st.sidebar.info(f"⏰ Trial time remaining: {hours_left}h {mins_left}m")
 
-# Show vendor persistence status
+# Show vendor persistence status + error if any
 if GOOGLE_SHEETS_ENABLED:
     st.sidebar.success("📒 Vendor autosave: Google Sheets connected")
 else:
     st.sidebar.info("📒 Vendor autosave: in-memory only (configure Google Sheets in secrets to persist).")
+    if GSHEETS_ERROR:
+        st.sidebar.error(f"Sheets status: {GSHEETS_ERROR}")
 
 # =========================
 # PAGE SWITCH
