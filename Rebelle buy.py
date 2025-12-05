@@ -148,6 +148,19 @@ if "inv_raw_df" not in st.session_state:
     st.session_state.inv_raw_df = None
 if "sales_raw_df" not in st.session_state:
     st.session_state.sales_raw_df = None
+if "vendor_df" not in st.session_state:
+    st.session_state.vendor_df = pd.DataFrame(
+        columns=[
+            "Vendor",
+            "Brands",
+            "Spotlight Products",
+            "Contact Name",
+            "Email",
+            "Phone",
+            "Net Terms",
+            "Notes",
+        ]
+    )
 
 # =========================
 # HELPERS
@@ -546,7 +559,7 @@ if not PLOTLY_AVAILABLE:
 # =========================
 section = st.sidebar.radio(
     "App Section",
-    ["📊 Inventory Dashboard", "🧾 PO Builder"],
+    ["📊 Inventory Dashboard", "🧾 PO Builder", "🤝 Vendor Tracker"],
     index=0,
 )
 
@@ -867,7 +880,7 @@ if section == "📊 Inventory Dashboard":
 # ============================================================
 # PAGE 2 – PO BUILDER
 # ============================================================
-else:
+elif section == "🧾 PO Builder":
     st.subheader("🧾 Purchase Order Builder")
 
     st.markdown(
@@ -1048,6 +1061,74 @@ else:
 
     else:
         st.info("Add at least one line item to generate totals and PDF.")
+
+# ============================================================
+# PAGE 3 – VENDOR TRACKER
+# ============================================================
+else:  # 🤝 Vendor Tracker
+    st.subheader("🤝 Vendor Tracking")
+
+    st.markdown(
+        "Use this page as a live vendor CRM: track **brands**, **spotlight SKUs**, "
+        "**contacts**, **terms**, and buyer notes."
+    )
+
+    st.markdown("### Import / Export")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        uploaded_vendor_csv = st.file_uploader(
+            "Upload Vendor CSV (optional)",
+            type="csv",
+            key="vendor_upload",
+            help="Columns will be matched by name where possible.",
+        )
+        if uploaded_vendor_csv is not None:
+            try:
+                df_up = pd.read_csv(uploaded_vendor_csv)
+                # Ensure we at least have all expected columns
+                expected_cols = [
+                    "Vendor",
+                    "Brands",
+                    "Spotlight Products",
+                    "Contact Name",
+                    "Email",
+                    "Phone",
+                    "Net Terms",
+                    "Notes",
+                ]
+                for c in expected_cols:
+                    if c not in df_up.columns:
+                        df_up[c] = ""
+                st.session_state.vendor_df = df_up[expected_cols]
+                st.success("Vendor table loaded from CSV.")
+            except Exception as e:
+                st.error(f"Error loading CSV: {e}")
+
+    with col_b:
+        csv_data = st.session_state.vendor_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Download Vendor Table (CSV)",
+            data=csv_data,
+            file_name="vendor_tracker_rebelle.csv",
+            mime="text/csv",
+        )
+
+    st.markdown("---")
+    st.markdown("### Vendor Table")
+
+    st.markdown(
+        "Edit cells directly, add/remove rows, and then download as CSV to save your work."
+    )
+
+    edited_df = st.data_editor(
+        st.session_state.vendor_df,
+        num_rows="dynamic",
+        use_container_width=True,
+    )
+
+    # Save changes back to session state
+    st.session_state.vendor_df = edited_df
 
 # =========================
 # FOOTER
