@@ -66,76 +66,6 @@ background_url = (
 )
 
 # =========================
-# GLOBAL STYLING
-# =========================
-st.markdown(
-    f"""
-    <style>
-    .stApp {{
-        background-image: url('{background_url}');
-        background-size: cover;
-        background-position: center;
-        background-attachment: fixed;
-    }}
-
-    /* Main content area (center) */
-    .block-container {{
-        background-color: rgba(0, 0, 0, 0.80);
-        padding: 2rem;
-        border-radius: 12px;
-        color: #ffffff !important;
-    }}
-
-    /* Force almost all text in main area to white, but keep input text default */
-    .block-container *:not(input):not(textarea):not(select) {{
-        color: #ffffff !important;
-    }}
-
-    /* Keep tables readable on dark background */
-    .dataframe td {{
-        color: #ffffff !important;
-    }}
-
-    .stButton>button {{
-        background-color: rgba(255, 255, 255, 0.08);
-        color: #ffffff;
-        border: 1px solid rgba(255, 255, 255, 0.8);
-        border-radius: 6px;
-    }}
-
-    .stButton>button:hover {{
-        background-color: rgba(255, 255, 255, 0.25);
-    }}
-
-    .footer {{
-        text-align: center;
-        font-size: 0.75rem;
-        opacity: 0.7;
-        margin-top: 2rem;
-        color: #ffffff !important;
-    }}
-
-    /* Sidebar: force dark text on light gray for readability */
-    [data-testid="stSidebar"] {{
-        background-color: #f5f5f5 !important;
-    }}
-    [data-testid="stSidebar"] * {{
-        color: #111111 !important;
-    }}
-
-    /* PO-only labels in main content */
-    .po-label {{
-        color: #ffffff !important;
-        font-weight: 600;
-        font-size: 0.9rem;
-        margin-bottom: 0.1rem;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# =========================
 # SESSION STATE DEFAULTS
 # =========================
 if "is_admin" not in st.session_state:
@@ -161,6 +91,147 @@ if "vendor_df" not in st.session_state:
             "Notes",
         ]
     )
+if "theme" not in st.session_state:
+    st.session_state.theme = "Dark"
+
+# =========================
+# THEME TOGGLE (LIGHT / DARK)
+# =========================
+st.sidebar.markdown("### 🎨 Theme")
+theme = st.sidebar.radio(
+    "Mode",
+    ["Dark", "Light"],
+    index=0 if st.session_state.theme == "Dark" else 1,
+)
+st.session_state.theme = theme
+
+# =========================
+# GLOBAL STYLING (PER THEME)
+# =========================
+if theme == "Dark":
+    css = f"""
+    <style>
+    .stApp {{
+        background-image: url('{background_url}');
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }}
+
+    .block-container {{
+        background-color: rgba(0, 0, 0, 0.80);
+        padding: 2rem;
+        border-radius: 12px;
+        color: #ffffff !important;
+    }}
+
+    /* Main content text */
+    .block-container *:not(input):not(textarea):not(select) {{
+        color: #ffffff !important;
+    }}
+
+    /* Tables */
+    .dataframe td {{
+        color: #ffffff !important;
+    }}
+
+    .stButton>button {{
+        background-color: rgba(255, 255, 255, 0.08);
+        color: #ffffff;
+        border: 1px solid rgba(255, 255, 255, 0.8);
+        border-radius: 6px;
+    }}
+
+    .stButton>button:hover {{
+        background-color: rgba(255, 255, 255, 0.25);
+    }}
+
+    .footer {{
+        text-align: center;
+        font-size: 0.75rem;
+        opacity: 0.7;
+        margin-top: 2rem;
+        color: #ffffff !important;
+    }}
+
+    /* Sidebar remains light for clarity */
+    [data-testid="stSidebar"] {{
+        background-color: #f5f5f5 !important;
+    }}
+    [data-testid="stSidebar"] * {{
+        color: #111111 !important;
+    }}
+
+    .po-label {{
+        color: #ffffff !important;
+        font-weight: 600;
+        font-size: 0.9rem;
+        margin-bottom: 0.1rem;
+    }}
+    </style>
+    """
+else:
+    css = f"""
+    <style>
+    .stApp {{
+        background-image: url('{background_url}');
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }}
+
+    .block-container {{
+        background-color: rgba(255, 255, 255, 0.92);
+        padding: 2rem;
+        border-radius: 12px;
+        color: #111111 !important;
+    }}
+
+    /* Main content text */
+    .block-container *:not(input):not(textarea):not(select) {{
+        color: #111111 !important;
+    }}
+
+    /* Tables */
+    .dataframe td {{
+        color: #111111 !important;
+    }}
+
+    .stButton>button {{
+        background-color: rgba(0, 0, 0, 0.05);
+        color: #111111;
+        border: 1px solid #111111;
+        border-radius: 6px;
+    }}
+
+    .stButton>button:hover {{
+        background-color: rgba(0, 0, 0, 0.12);
+    }}
+
+    .footer {{
+        text-align: center;
+        font-size: 0.75rem;
+        opacity: 0.7;
+        margin-top: 2rem;
+        color: #111111 !important;
+    }}
+
+    [data-testid="stSidebar"] {{
+        background-color: #ffffff !important;
+    }}
+    [data-testid="stSidebar"] * {{
+        color: #111111 !important;
+    }}
+
+    .po-label {{
+        color: #111111 !important;
+        font-weight: 600;
+        font-size: 0.9rem;
+        margin-bottom: 0.1rem;
+    }}
+    </style>
+    """
+st.markdown(css, unsafe_allow_html=True)
 
 # =========================
 # HELPERS
@@ -884,7 +955,7 @@ elif section == "🧾 PO Builder":
     st.subheader("🧾 Purchase Order Builder")
 
     st.markdown(
-        "The words above each PO field are white on the dark background for clarity."
+        "The words above each PO field are adjusted for the current theme so they're readable."
     )
 
     # -------------------------
