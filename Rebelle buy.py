@@ -19,33 +19,6 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-# ------------------------------------------------------------
-# OPTIONAL / SAFE IMPORT FOR GOOGLE SHEETS (VENDOR AUTOSAVE)
-# ------------------------------------------------------------
-GOOGLE_SHEETS_ENABLED = False
-st.sidebar.write("GOOGLE_SHEETS_ENABLED:", GOOGLE_SHEETS_ENABLED)
-
-VENDOR_WS = None
-
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    # Expect these in Streamlit secrets:
-    # [gcp_service_account]  (JSON block)
-    # VENDOR_SHEET_ID = "....."
-    if "gcp_service_account" in st.secrets and "VENDOR_SHEET_ID" in st.secrets:
-        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"], scopes=scopes
-        )
-        gc = gspread.authorize(creds)
-        VENDOR_WS = gc.open_by_key(st.secrets["VENDOR_SHEET_ID"]).sheet1
-        GOOGLE_SHEETS_ENABLED = True
-except Exception:
-    GOOGLE_SHEETS_ENABLED = False
-    VENDOR_WS = None
-
 # =========================
 # CONFIG & BRANDING
 # =========================
@@ -62,7 +35,28 @@ TRIAL_DURATION_HOURS = 24
 ADMIN_USERNAME = "God"
 ADMIN_PASSWORD = "Major420"
 
-# ✅ Canonical Rebelle category names (values, not column names)
+# Tab icon (favicon)
+page_icon_url = (
+    "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
+    "ef50d34e20caf45231642e957137d6141082dbb9/rebelle.jpg"
+)
+
+st.set_page_config(
+    page_title=APP_TITLE,
+    layout="wide",
+    page_icon=page_icon_url,
+)
+
+# 🔍 DEBUG 1 – show what secrets are available
+st.sidebar.write("Secrets keys:", list(st.secrets.keys()))
+
+# Background image
+background_url = (
+    "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
+    "ef50d34e20caf45231642e957137d6141082dbb9/rebelle%20main.png"
+)
+
+# Canonical Rebelle category names
 REB_CATEGORIES = [
     "flower",
     "pre rolls",
@@ -86,24 +80,30 @@ VENDOR_COLUMNS = [
     "Notes",
 ]
 
-# Tab icon (favicon)
-page_icon_url = (
-    "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
-    "ef50d34e20caf45231642e957137d6141082dbb9/rebelle.jpg"
-)
+# ------------------------------------------------------------
+# OPTIONAL / SAFE IMPORT FOR GOOGLE SHEETS (VENDOR AUTOSAVE)
+# ------------------------------------------------------------
+GOOGLE_SHEETS_ENABLED = False
+VENDOR_WS = None
 
-st.set_page_config(
-    st.sidebar.write("Secrets keys:", list(st.secrets.keys()))
-    page_title=APP_TITLE,
-    layout="wide",
-    page_icon=page_icon_url,
-)
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
 
-# Background image
-background_url = (
-    "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
-    "ef50d34e20caf45231642e957137d6141082dbb9/rebelle%20main.png"
-)
+    if "gcp_service_account" in st.secrets and "VENDOR_SHEET_ID" in st.secrets:
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"], scopes=scopes
+        )
+        gc = gspread.authorize(creds)
+        VENDOR_WS = gc.open_by_key(st.secrets["VENDOR_SHEET_ID"]).sheet1
+        GOOGLE_SHEETS_ENABLED = True
+except Exception:
+    GOOGLE_SHEETS_ENABLED = False
+    VENDOR_WS = None
+
+# 🔍 DEBUG 2 – show if Google Sheets connected
+st.sidebar.write("GOOGLE_SHEETS_ENABLED:", GOOGLE_SHEETS_ENABLED)
 
 # =========================
 # SESSION STATE DEFAULTS
@@ -371,7 +371,7 @@ def generate_po_pdf(
     total,
 ):
     buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
+    c = canvas.Canvas(buffer, pagesizes=letter)
     width, height = letter
 
     left_margin = 0.7 * inch
@@ -553,8 +553,21 @@ def generate_po_pdf(
 # =========================
 # 🔐 ADMIN + TRIAL GATE
 # =========================
+st.title(f"🌿 {APP_TITLE}")
+st.markdown(f"**Client:** {CLIENT_NAME}")
+st.markdown(APP_TAGLINE)
+st.markdown("---")
+
+if not PLOTLY_AVAILABLE:
+    st.warning(
+        "⚠️ Plotly is not installed in this environment. Charts will be disabled.\n\n"
+        "If using Streamlit Cloud, add `plotly` and `reportlab` to your `requirements.txt` file."
+    )
 
 st.sidebar.markdown("### 👑 Admin Login")
+
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
 
 if not st.session_state.is_admin:
     admin_user = st.sidebar.text_input("Username", key="admin_user")
@@ -612,20 +625,6 @@ if GOOGLE_SHEETS_ENABLED:
     st.sidebar.success("📒 Vendor autosave: Google Sheets connected")
 else:
     st.sidebar.info("📒 Vendor autosave: in-memory only (configure Google Sheets in secrets to persist).")
-
-# =========================
-# HEADER
-# =========================
-st.title(f"🌿 {APP_TITLE}")
-st.markdown(f"**Client:** {CLIENT_NAME}")
-st.markdown(APP_TAGLINE)
-st.markdown("---")
-
-if not PLOTLY_AVAILABLE:
-    st.warning(
-        "⚠️ Plotly is not installed in this environment. Charts will be disabled.\n\n"
-        "If using Streamlit Cloud, add `plotly` and `reportlab` to your `requirements.txt` file."
-    )
 
 # =========================
 # PAGE SWITCH
@@ -1137,13 +1136,11 @@ else:  # 🤝 Vendor Tracker
         use_container_width=True,
     )
 
-    # Normalize columns
     for c in VENDOR_COLUMNS:
         if c not in edited_df.columns:
             edited_df[c] = ""
     edited_df = edited_df[VENDOR_COLUMNS]
 
-    # If there were changes, update session + Google Sheets
     if not edited_df.equals(st.session_state.vendor_df):
         st.session_state.vendor_df = edited_df.copy()
 
@@ -1157,7 +1154,6 @@ else:  # 🤝 Vendor Tracker
             except Exception as e:
                 st.error(f"Error autosaving vendors to Google Sheets: {e}")
 
-    # Optional backup CSV download
     st.markdown("---")
     st.markdown("### Backup Export")
     csv_data = st.session_state.vendor_df.to_csv(index=False).encode("utf-8")
