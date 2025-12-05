@@ -4,7 +4,6 @@ import numpy as np
 import io
 import math
 from datetime import datetime
-from textwrap import dedent
 
 # Optional Plotly import
 try:
@@ -33,11 +32,6 @@ st.set_page_config(
 REB_BACKGROUND = (
     "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
     "ef50d34e20caf45231642e957137d6141082dbb9/rebelle%20main.png"
-)
-
-REB_TAB_ICON = (
-    "https://raw.githubusercontent.com/MAVet710/Rebelle-Purchasing-Dash/"
-    "ef50d34e20caf45231642e957137d6141082dbb9/rebelle.jpg"
 )
 
 BASE_CSS = f"""
@@ -154,11 +148,9 @@ GOOGLE_SHEETS_ENABLED = False
 sheets_status = "Vendor autosave: in-memory only."
 
 try:
-    # Your secrets structure currently has everything nested under gcp_service_account
     if "gcp_service_account" in st.secrets:
         sa_block = st.secrets["gcp_service_account"]
         if isinstance(sa_block, dict):
-            # Allow VENDOR_SHEET_ID either inside the block or at root
             if "VENDOR_SHEET_ID" in sa_block:
                 VENDOR_SHEET_ID = sa_block["VENDOR_SHEET_ID"]
             elif "VENDOR_SHEET_ID" in st.secrets:
@@ -188,17 +180,17 @@ except Exception as e:
     sheets_status = f"Error initializing Google Sheets: {e}"
 
 # ============================================================================
-# SESSION STATE SETUP (AUTH, SECTION, VENDOR DATA)
+# SESSION STATE SETUP
 # ============================================================================
 
 if "auth_mode" not in st.session_state:
-    st.session_state.auth_mode = "trial"  # "trial" or "admin"
+    st.session_state.auth_mode = "trial"
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 if "trial_key_valid" not in st.session_state:
     st.session_state.trial_key_valid = False
 if "app_section" not in st.session_state:
-    st.session_state.app_section = "Inventory"
+    st.session_state.app_section = "Inventory Dashboard"
 if "vendor_df" not in st.session_state:
     st.session_state.vendor_df = pd.DataFrame(
         columns=[
@@ -212,6 +204,8 @@ if "vendor_df" not in st.session_state:
             "Notes",
         ]
     )
+if "metric_filter" not in st.session_state:
+    st.session_state.metric_filter = "None"
 
 # ============================================================================
 # SIDEBAR – THEME, AUTH, NAV
@@ -241,7 +235,9 @@ with st.sidebar:
             st.session_state.auth_mode = "trial"
     else:
         admin_user = st.text_input("Username", value="", placeholder="Admin username")
-        admin_pass = st.text_input("Password", value="", type="password", placeholder="Password")
+        admin_pass = st.text_input(
+            "Password", value="", type="password", placeholder="Password"
+        )
         if st.button("Login as Admin"):
             if admin_user == "God" and admin_pass == "Major420":
                 st.session_state.is_admin = True
@@ -265,12 +261,11 @@ with st.sidebar:
     st.markdown("### ℹ️ Vendor Autosave")
     st.info(sheets_status)
 
-    # Hidden-ish debug: only visible to admin in a small expander
+    # Admin-only debug
     if st.session_state.is_admin:
         with st.expander("Developer debug (hidden from clients)", expanded=False):
-            st.caption("Loaded secrets (redacted structure):")
+            st.caption("Loaded secrets (keys only):")
             try:
-                # Show only keys, not full private key
                 sec_view = {}
                 for k, v in st.secrets.items():
                     if isinstance(v, dict):
@@ -283,17 +278,21 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### App Section")
+
+    sections = ["Inventory Dashboard", "PO Builder", "Vendor Tracker"]
+    current_section = st.session_state.get("app_section", "Inventory Dashboard")
+    if current_section not in sections:
+        current_section = "Inventory Dashboard"
+
     section = st.radio(
         "",
-        ["Inventory Dashboard", "PO Builder", "Vendor Tracker"],
-        index=["Inventory Dashboard", "PO Builder", "Vendor Tracker"].index(
-            st.session_state.app_section
-        ),
+        sections,
+        index=sections.index(current_section),
         label_visibility="collapsed",
     )
     st.session_state.app_section = section
 
-# If not admin and trial not valid → lock app
+# Lock app if no access
 if not st.session_state.is_admin and not st.session_state.trial_key_valid:
     st.title("🍃 Rebelle Cannabis Purchasing Dashboard")
     st.write("Client: **Rebelle Cannabis**")
@@ -312,16 +311,6 @@ st.caption("Streamlined purchasing visibility powered by Dutchie / BLAZE data.")
 # HELPER FUNCTIONS
 # ============================================================================
 
-def highlight_doh(val, threshold=21):
-    try:
-        v = float(val)
-        if v < threshold:
-            return "background-color: rgba(239,68,68,0.15); color:#fecaca; font-weight:600;"
-        return ""
-    except Exception:
-        return ""
-
-
 def calculate_days_on_hand(onhand_units, avg_units_per_day):
     if avg_units_per_day <= 0:
         return 0
@@ -338,7 +327,7 @@ def calculate_reorder_qty(doh, threshold, avg_units_per_day):
 
 
 # ============================================================================
-# INVENTORY DASHBOARD SECTION
+# INVENTORY DASHBOARD
 # ============================================================================
 
 if st.session_state.app_section == "Inventory Dashboard":
@@ -372,11 +361,10 @@ if st.session_state.app_section == "Inventory Dashboard":
         st.info("Upload **Inventory CSV** and **Product Sales** to generate forecasts.")
     else:
         try:
-            # --- Inventory ---
             inv_df = pd.read_csv(inv_file)
             inv_df.columns = inv_df.columns.str.strip().str.lower()
 
-            # Normalize column names for both Dutchie & BLAZE exports
+            # Find core columns
             name_col = None
             for c in inv_df.columns:
                 if c in ["product", "product name", "itemname", "name"]:
@@ -407,10 +395,13 @@ if st.session_state.app_section == "Inventory Dashboard":
                     qty_col: "onhandunits",
                 }
             )
-            inv_df["onhandunits"] = pd.to_numeric(inv_df["onhandunits"], errors="coerce").fillna(0)
-            inv_df["subcategory"] = inv_df["subcategory"].astype(str).str.strip().str.lower()
+            inv_df["onhandunits"] = pd.to_numeric(
+                inv_df["onhandunits"], errors="coerce"
+            ).fillna(0)
+            inv_df["subcategory"] = (
+                inv_df["subcategory"].astype(str).str.strip().str.lower()
+            )
 
-            # Extract simple package size from itemname
             import re
 
             def extract_size(name: str) -> str:
@@ -421,14 +412,11 @@ if st.session_state.app_section == "Inventory Dashboard":
                     return mg_match.group(1)
                 if g_match:
                     return g_match.group(1)
-                eighth = re.search(r"(\d+\/\d+\s?oz)", name)
-                if eighth:
-                    return eighth.group(1)
+                frac = re.search(r"(\d+\/\d+\s?oz)", name)
+                if frac:
+                    return frac.group(1)
                 return "unspecified"
 
-            inv_df["packagesize"] = inv_df["itemname"].apply(extract_size)
-
-            # Strain / type detection
             def detect_type(name: str) -> str:
                 n = str(name).lower()
                 if "disposable" in n and ("vape" in n or "pen" in n):
@@ -447,6 +435,7 @@ if st.session_state.app_section == "Inventory Dashboard":
                     return "CBD"
                 return "Unspecified"
 
+            inv_df["packagesize"] = inv_df["itemname"].apply(extract_size)
             inv_df["cannabis_type"] = inv_df["itemname"].apply(detect_type)
 
             inv_summary = (
@@ -455,7 +444,7 @@ if st.session_state.app_section == "Inventory Dashboard":
                 .reset_index()
             )
 
-            # --- Sales ---
+            # Sales
             sales_raw = pd.read_excel(product_sales_file)
             sales_raw.columns = sales_raw.columns.astype(str).str.strip().str.lower()
 
@@ -507,10 +496,13 @@ if st.session_state.app_section == "Inventory Dashboard":
             ).fillna({"unitssold": 0, "avgunitsperday": 0})
 
             detail["daysonhand"] = detail.apply(
-                lambda r: calculate_days_on_hand(r["onhandunits"], r["avgunitsperday"]), axis=1
+                lambda r: calculate_days_on_hand(r["onhandunits"], r["avgunitsperday"]),
+                axis=1,
             )
             detail["reorderqty"] = detail.apply(
-                lambda r: calculate_reorder_qty(r["daysonhand"], doh_threshold, r["avgunitsperday"]),
+                lambda r: calculate_reorder_qty(
+                    r["daysonhand"], doh_threshold, r["avgunitsperday"]
+                ),
                 axis=1,
             )
 
@@ -525,7 +517,7 @@ if st.session_state.app_section == "Inventory Dashboard":
 
             detail["reorderpriority"] = detail.apply(reorder_tag, axis=1)
 
-            # Inventory metric chips
+            # metrics
             total_units = sales_df["unitssold"].astype(float).sum()
             active_categories = detail["subcategory"].nunique()
             reorder_asap = detail[detail["reorderpriority"] == "1 – Reorder ASAP"].shape[0]
@@ -533,35 +525,18 @@ if st.session_state.app_section == "Inventory Dashboard":
 
             c1, c2, c3, c4 = st.columns(4)
             with c1:
-                if st.button(
-                    f"🔢 Total Units Sold: {int(total_units)}",
-                    type="secondary",
-                    use_container_width=True,
-                ):
+                if st.button(f"🔢 Total Units Sold: {int(total_units)}"):
                     st.session_state.metric_filter = "None"
             with c2:
-                if st.button(
-                    f"📂 Active Categories: {active_categories}",
-                    type="secondary",
-                    use_container_width=True,
-                ):
+                if st.button(f"📂 Active Categories: {active_categories}"):
                     st.session_state.metric_filter = "None"
             with c3:
-                if st.button(
-                    f"👀 Watchlist: {watchlist_items}",
-                    type="secondary",
-                    use_container_width=True,
-                ):
+                if st.button(f"👀 Watchlist: {watchlist_items}"):
                     st.session_state.metric_filter = "Watchlist"
             with c4:
-                if st.button(
-                    f"⏱️ Reorder ASAP: {reorder_asap}",
-                    type="secondary",
-                    use_container_width=True,
-                ):
+                if st.button(f"⏱️ Reorder ASAP: {reorder_asap}"):
                     st.session_state.metric_filter = "Reorder ASAP"
 
-            # Filter based on metric chip
             mf = st.session_state.get("metric_filter", "None")
             if mf == "Watchlist":
                 detail_view = detail[detail["reorderpriority"] == "2 – Watch Closely"]
@@ -572,12 +547,16 @@ if st.session_state.app_section == "Inventory Dashboard":
 
             st.markdown("### Inventory Forecast Table")
 
-            grouped = detail_view.sort_values(
-                ["reorderpriority", "avgunitsperday"], ascending=[True, False]
-            ).groupby("subcategory")
+            grouped = (
+                detail_view.sort_values(
+                    ["reorderpriority", "avgunitsperday"], ascending=[True, False]
+                ).groupby("subcategory")
+            )
 
             for cat, group in grouped:
-                avg_doh = int(np.floor(group["daysonhand"].replace([np.inf, -np.inf], 0).mean()))
+                avg_doh = int(
+                    np.floor(group["daysonhand"].replace([np.inf, -np.inf], 0).mean())
+                )
                 with st.expander(f"{cat.title()} – Avg Days On Hand: {avg_doh}"):
                     show_df = group[
                         [
@@ -604,11 +583,8 @@ if st.session_state.app_section == "Inventory Dashboard":
                     )
 
                     styled = show_df.style.applymap(
-                        lambda v: "color:#f97373; font-weight:600;"
-                        if isinstance(v, (int, float)) and v < 21 and show_df.columns[
-                            list(show_df.iloc[0]).index(v)
-                        ]
-                        == "Days On Hand"
+                        lambda x: "color:#f97373; font-weight:600;"
+                        if isinstance(x, (int, float)) and x < doh_threshold
                         else "",
                         subset=["Days On Hand"],
                     )
@@ -626,7 +602,7 @@ if st.session_state.app_section == "Inventory Dashboard":
             st.error(f"Error processing files: {e}")
 
 # ============================================================================
-# PO BUILDER SECTION
+# PO BUILDER
 # ============================================================================
 
 elif st.session_state.app_section == "PO Builder":
@@ -653,13 +629,13 @@ elif st.session_state.app_section == "PO Builder":
             columns=["SKU", "Description", "Units", "Unit Cost", "Line Total"]
         )
 
-    add_line = st.button("➕ Add Line")
-    if add_line:
+    if st.button("➕ Add Line"):
         st.session_state.po_lines = pd.concat(
             [
                 st.session_state.po_lines,
                 pd.DataFrame(
-                    [["", "", 0, 0.0, 0.0]], columns=st.session_state.po_lines.columns
+                    [["", "", 0, 0.0, 0.0]],
+                    columns=st.session_state.po_lines.columns,
                 ),
             ],
             ignore_index=True,
@@ -672,7 +648,6 @@ elif st.session_state.app_section == "PO Builder":
         key="po_editor",
     )
 
-    # Recalculate line totals
     edited["Units"] = pd.to_numeric(edited["Units"], errors="coerce").fillna(0)
     edited["Unit Cost"] = pd.to_numeric(edited["Unit Cost"], errors="coerce").fillna(0.0)
     edited["Line Total"] = edited["Units"] * edited["Unit Cost"]
@@ -681,7 +656,6 @@ elif st.session_state.app_section == "PO Builder":
     subtotal = edited["Line Total"].sum()
     st.markdown(f"**Subtotal:** ${subtotal:,.2f}")
 
-    # Simple text PO export (could be replaced with real PDF generation later)
     if st.button("Download PO (TXT)"):
         buffer = io.StringIO()
         buffer.write("Rebelle Cannabis – Purchase Order\n")
@@ -695,8 +669,9 @@ elif st.session_state.app_section == "PO Builder":
         buffer.write("-" * 60 + "\n")
         for _, row in edited.iterrows():
             buffer.write(
-                f"{row['SKU']} | {row['Description']} | {row['Units']} @ "
-                f"${row['Unit Cost']:.2f} = ${row['Line Total']:.2f}\n"
+                f"{row['SKU']} | {row['Description']} | "
+                f"{row['Units']} @ ${row['Unit Cost']:.2f} "
+                f"= ${row['Line Total']:.2f}\n"
             )
         buffer.write("\n")
         buffer.write(f"Subtotal: ${subtotal:,.2f}\n")
@@ -709,7 +684,7 @@ elif st.session_state.app_section == "PO Builder":
         )
 
 # ============================================================================
-# VENDOR TRACKER SECTION
+# VENDOR TRACKER
 # ============================================================================
 
 elif st.session_state.app_section == "Vendor Tracker":
@@ -730,10 +705,8 @@ elif st.session_state.app_section == "Vendor Tracker":
         hide_index=True,
     )
 
-    # Update session state
     st.session_state.vendor_df = edited_vendor_df
 
-    # Autosave to Google Sheets (if enabled)
     if GOOGLE_SHEETS_ENABLED and VENDOR_SHEET_ID:
         try:
             sh = gc.open_by_key(VENDOR_SHEET_ID)
@@ -742,7 +715,6 @@ elif st.session_state.app_section == "Vendor Tracker":
             except gspread.WorksheetNotFound:
                 ws = sh.add_worksheet(title="Vendors", rows=1000, cols=10)
 
-            # Clear and write
             ws.clear()
             if not edited_vendor_df.empty:
                 ws.update(
@@ -753,13 +725,11 @@ elif st.session_state.app_section == "Vendor Tracker":
             st.success("Vendor table autosaved to Google Sheets.", icon="✅")
         except Exception as e:
             st.warning(f"Autosave failed – check Sheets permissions: {e}")
-
     else:
         st.info(
             "Autosave is in-memory only. Configure Google Sheets credentials to persist across sessions."
         )
 
-    # Backup CSV export
     csv_vendor = edited_vendor_df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "Download Vendor Table (CSV)",
