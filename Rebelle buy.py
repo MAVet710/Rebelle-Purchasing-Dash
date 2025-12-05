@@ -12,6 +12,7 @@ from reportlab.lib.units import inch
 
 # ------------------------------------------------------------
 # OPTIONAL / SAFE IMPORT FOR PLOTLY
+st.sidebar.write("DEBUG SECRETS:", st.secrets)
 # ------------------------------------------------------------
 try:
     import plotly.express as px
@@ -46,7 +47,6 @@ st.set_page_config(
     layout="wide",
     page_icon=page_icon_url,
 
-st.sidebar.write("DEBUG SECRETS:", st.secrets)
 
 )
 
