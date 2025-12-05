@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import io
 import math
+import re
 from datetime import datetime
 
 # Optional Plotly import
@@ -176,7 +177,7 @@ try:
     else:
         sheets_status = "gcp_service_account not defined in secrets; autosave is in-memory only."
 except Exception as e:
-    GOOGLE_SHEETS_ENABLED = False    # fail safely
+    GOOGLE_SHEETS_ENABLED = False
     sheets_status = f"Error initializing Google Sheets: {e}"
 
 # ============================================================================
@@ -305,7 +306,7 @@ if not st.session_state.is_admin and not st.session_state.trial_key_valid:
 
 st.title("🍃 Rebelle Cannabis Purchasing Dashboard")
 st.write("**Client:** Rebelle Cannabis")
-st.caption("Streamlined purchasing visibility powered by Dutchie / BLAZE data.")
+st.caption("Streamlined purchasing visibility powered by Dutchie / BLAZE / other POS exports.")
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -326,6 +327,10 @@ def calculate_reorder_qty(doh, threshold, avg_units_per_day):
     return int(math.ceil(gap * avg_units_per_day))
 
 
+def normalize_name(s: str) -> str:
+    return s.lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
 def find_column(possible_cols, df_columns):
     """
     Flexible matching for different column name variants.
@@ -333,16 +338,113 @@ def find_column(possible_cols, df_columns):
     - Ignores spaces, underscores, and hyphens
     Returns the first match from df_columns or None.
     """
-    cleaned_cols = {
-        c.lower().replace(" ", "").replace("_", "").replace("-", ""): c
-        for c in df_columns
-    }
-
+    cleaned_cols = {normalize_name(c): c for c in df_columns}
     for target in possible_cols:
-        key = target.lower().replace(" ", "").replace("_", "").replace("-", "")
+        key = normalize_name(target)
         if key in cleaned_cols:
             return cleaned_cols[key]
     return None
+
+
+def parse_sales_report(product_sales_file):
+    """
+    Handles Blaze-style and other Excel exports where headers may not be on row 0.
+    Looks across all rows in all sheets for a row that contains BOTH:
+      - a quantity-sold column header variant
+      - a category/mastercategory header variant
+    Then promotes that row to the header and returns a clean DataFrame plus
+    the resolved quantity + category column names.
+    """
+    xls = pd.ExcelFile(product_sales_file)
+
+    # Quantity variants: Blaze/Dutchie/other POS
+    qty_variants = [
+        "quantitysold",
+        "quantity sold",
+        "qtysold",
+        "qty sold",
+        "qty",
+        "qty.",
+        "sold",
+        "units",
+        "units sold",
+        "units_sold",
+        "salesunits",
+        "sales units",
+        "total units",
+        "totalunits",
+        "total quantity",
+        "total quantity sold",
+        "sum quantity",
+        "sum of quantity",
+        "sold units",
+        "units sold (qty)",
+    ]
+
+    # Category/master variants
+    cat_variants = [
+        "mastercategory",
+        "master category",
+        "category",
+        "productcategory",
+        "product category",
+        "product type",
+        "producttype",
+        "item category",
+        "itemcategory",
+        "subcategory",
+        "sub category",
+        "department",
+        "dept",
+        "prod category",
+        "product group",
+        "productgroup",
+    ]
+
+    qty_norms = {normalize_name(v) for v in qty_variants}
+    cat_norms = {normalize_name(v) for v in cat_variants}
+
+    last_sheet_info = []
+
+    for sheet in xls.sheet_names:
+        df_raw = xls.parse(sheet, header=None)
+        header_row_idx = None
+
+        # search row-by-row for header
+        for i in range(len(df_raw)):
+            row_vals = [str(x).strip() for x in df_raw.iloc[i].tolist()]
+            row_norms = {normalize_name(x) for x in row_vals}
+
+            if (row_norms & qty_norms) and (row_norms & cat_norms):
+                header_row_idx = i
+                break
+
+        # record info for error messages (first few rows)
+        last_sheet_info.append(
+            (sheet, df_raw.head().values.tolist())
+        )
+
+        if header_row_idx is not None:
+            header_vals = df_raw.iloc[header_row_idx].astype(str).tolist()
+            df = df_raw.iloc[header_row_idx + 1 :].copy()
+            df.columns = header_vals
+            df = df.dropna(how="all")
+            df.columns = df.columns.astype(str).str.strip().str.lower()
+
+            qty_col = find_column(qty_variants, df.columns)
+            cat_col = find_column(cat_variants, df.columns)
+
+            return df, sheet, qty_col, cat_col
+
+    # if we get here, nothing matched
+    raise ValueError(
+        "Could not find a header row with both a quantity-sold column and "
+        "a category/mastercategory column.\n\n"
+        "Sample of what was scanned (first few rows of each sheet):\n"
+        + "\n".join(
+            f"- Sheet '{s}': first rows {rows}" for s, rows in last_sheet_info[:3]
+        )
+    )
 
 # ============================================================================
 # INVENTORY DASHBOARD
@@ -351,10 +453,10 @@ def find_column(possible_cols, df_columns):
 if st.session_state.app_section == "Inventory Dashboard":
     st.markdown("## 📦 Inventory Dashboard")
 
-    st.markdown("##### Data Source")
+    st.markdown("##### Data Source (for your reference)")
     data_source = st.radio(
         "POS / Reporting Backend",
-        ["Dutchie", "BLAZE"],
+        ["Dutchie", "BLAZE", "Other"],
         horizontal=True,
         label_visibility="collapsed",
     )
@@ -363,7 +465,9 @@ if st.session_state.app_section == "Inventory Dashboard":
     with col_up1:
         inv_file = st.file_uploader("Inventory CSV", type=["csv"])
     with col_up2:
-        product_sales_file = st.file_uploader("Product Sales Report (XLSX)", type=["xlsx"])
+        product_sales_file = st.file_uploader(
+            "Product Sales Report (XLSX)", type=["xlsx"]
+        )
 
     doh_threshold = st.slider("Days on Hand Threshold", min_value=7, max_value=45, value=21)
     date_diff = st.slider("Days in Sales Period", min_value=7, max_value=90, value=60)
@@ -381,29 +485,89 @@ if st.session_state.app_section == "Inventory Dashboard":
         try:
             # ----------------- INVENTORY FILE -----------------
             inv_df = pd.read_csv(inv_file)
-            inv_df.columns = inv_df.columns.str.strip().str.lower()
+            inv_df.columns = inv_df.columns.astype(str).str.strip().str.lower()
 
-            # Find core columns
-            name_col = None
-            for c in inv_df.columns:
-                if c in ["product", "product name", "itemname", "name"]:
-                    name_col = c
-                    break
-            qty_col = None
-            for c in inv_df.columns:
-                if "available" in c or "on hand" in c or "qty" in c:
-                    qty_col = c
-                    break
-            cat_col = None
-            for c in inv_df.columns:
-                if c in ["category", "subcategory", "mastercategory"]:
-                    cat_col = c
-                    break
+            # Product name / SKU / description variants
+            inv_name_variants = [
+                "product",
+                "product name",
+                "productname",
+                "item",
+                "item name",
+                "itemname",
+                "sku",
+                "sku name",
+                "sku description",
+                "product description",
+                "description",
+                "strain",
+                "producttitle",
+                "item description",
+            ]
+
+            # On-hand / available quantity variants
+            inv_qty_variants = [
+                "available",
+                "availableqty",
+                "available quantity",
+                "available_qty",
+                "on hand",
+                "onhand",
+                "on_hand",
+                "on hand qty",
+                "onhandqty",
+                "onhandunits",
+                "ending inventory",
+                "ending qty",
+                "current inventory",
+                "current qty",
+                "inventory on hand",
+                "stock on hand",
+                "qoh",
+                "qty on hand",
+                "quantity on hand",
+                "quantity",
+                "qty",
+                "qty.",
+            ]
+
+            # Category / product type variants
+            inv_cat_variants = [
+                "category",
+                "subcategory",
+                "mastercategory",
+                "productcategory",
+                "product category",
+                "product type",
+                "producttype",
+                "item category",
+                "itemcategory",
+                "department",
+                "dept",
+                "prod category",
+                "product group",
+                "productgroup",
+                "menu category",
+                "menucategory",
+            ]
+
+            name_col = find_column(inv_name_variants, inv_df.columns)
+            qty_col = find_column(inv_qty_variants, inv_df.columns)
+            cat_col = find_column(inv_cat_variants, inv_df.columns)
 
             if name_col is None or qty_col is None or cat_col is None:
                 st.error(
-                    "Inventory file missing required columns. "
-                    "Need something like product name, category, and on-hand quantity."
+                    "Inventory file missing required columns.\n\n"
+                    "I tried to find something like:\n"
+                    "- Product: "
+                    + ", ".join(inv_name_variants)
+                    + "\n- Quantity On Hand: "
+                    + ", ".join(inv_qty_variants)
+                    + "\n- Category: "
+                    + ", ".join(inv_cat_variants)
+                    + "\n\n"
+                    "Columns in your inventory file:\n"
+                    + ", ".join(inv_df.columns)
                 )
                 st.stop()
 
@@ -420,8 +584,6 @@ if st.session_state.app_section == "Inventory Dashboard":
             inv_df["subcategory"] = (
                 inv_df["subcategory"].astype(str).str.strip().str.lower()
             )
-
-            import re
 
             def extract_size(name: str) -> str:
                 name = str(name).lower()
@@ -463,35 +625,16 @@ if st.session_state.app_section == "Inventory Dashboard":
                 .reset_index()
             )
 
-            # ----------------- PRODUCT SALES FILE -----------------
-            sales_raw = pd.read_excel(product_sales_file)
-            sales_raw.columns = sales_raw.columns.astype(str).str.strip().str.lower()
-
-            # Flexible variants for quantity sold
-            qty_variants = [
-                "quantitysold", "quantity_sold", "quantity sold",
-                "qtysold", "qty", "sold", "unitssold", "units sold",
-                "salesunits", "totalunits", "totalsold", "soldunits"
-            ]
-
-            # Flexible variants for category / master category
-            cat_variants = [
-                "mastercategory", "master category",
-                "category", "productcategory", "product category",
-                "subcategory", "department", "dept"
-            ]
-
-            qty_sold_col = find_column(qty_variants, sales_raw.columns)
-            cat_sales_col = find_column(cat_variants, sales_raw.columns)
+            # ----------------- PRODUCT SALES FILE (SMART HEADER PARSE) -----------------
+            sales_raw, used_sheet, qty_sold_col, cat_sales_col = parse_sales_report(
+                product_sales_file
+            )
+            st.caption(f"Using Product Sales sheet: **{used_sheet}**")
 
             if qty_sold_col is None or cat_sales_col is None:
                 st.error(
-                    "Product Sales file detected but could not find required columns.\n\n"
-                    "**Looked for quantity variants:** "
-                    + ", ".join(qty_variants)
-                    + "\n\n**Looked for category variants:** "
-                    + ", ".join(cat_variants)
-                    + "\n\n**Columns in your file:** "
+                    "Unexpected issue reading Product Sales sheet.\n\n"
+                    "**Columns in selected sheet:** "
                     + ", ".join(list(sales_raw.columns))
                 )
                 st.stop()
@@ -502,10 +645,12 @@ if st.session_state.app_section == "Inventory Dashboard":
                     cat_sales_col: "mastercategory",
                 }
             )
+
             sales_df["mastercategory"] = (
                 sales_df["mastercategory"].astype(str).str.strip().str.lower()
             )
 
+            # aggregate per mastercategory
             agg_sales = (
                 sales_df.groupby("mastercategory")["unitssold"]
                 .sum()
@@ -515,6 +660,7 @@ if st.session_state.app_section == "Inventory Dashboard":
                 agg_sales["unitssold"].astype(float) / float(date_diff) * velocity_adjustment
             )
 
+            # join inventory rollup to sales summary
             detail = inv_summary.merge(
                 agg_sales,
                 left_on="subcategory",
@@ -522,6 +668,7 @@ if st.session_state.app_section == "Inventory Dashboard":
                 how="left",
             ).fillna({"unitssold": 0, "avgunitsperday": 0})
 
+            # DOH & reorder math
             detail["daysonhand"] = detail.apply(
                 lambda r: calculate_days_on_hand(r["onhandunits"], r["avgunitsperday"]),
                 axis=1,
