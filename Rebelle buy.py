@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
+import io
 from datetime import datetime, timedelta
 from io import BytesIO
 
@@ -10,20 +11,21 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 
-# Optional Plotly
+# ------------------------------------------------------------
+# OPTIONAL IMPORTS
+# ------------------------------------------------------------
 try:
     import plotly.express as px
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-# Optional Google Sheets for Vendor Tracker
 try:
     import gspread
     from google.oauth2.service_account import Credentials
-    GSHEETS_AVAILABLE = True
-except Exception:
-    GSHEETS_AVAILABLE = False
+    GSPREAD_AVAILABLE = True
+except ImportError:
+    GSPREAD_AVAILABLE = False
 
 # =========================
 # CONFIG & BRANDING
@@ -34,7 +36,7 @@ APP_TAGLINE = "Streamlined purchasing visibility powered by Dutchie / BLAZE data
 LICENSE_FOOTER = f"Licensed exclusively to {CLIENT_NAME} • Powered by MAVet710 Analytics"
 
 # 🔐 TRIAL SETTINGS
-TRIAL_KEY = "rebelle24"        # Rebelle 24-hour trial key
+TRIAL_KEY = "rebelle24"        # 24-hour trial key
 TRIAL_DURATION_HOURS = 24
 
 # 👑 ADMIN CREDS
@@ -72,122 +74,6 @@ background_url = (
 )
 
 # =========================
-# THEME STATE + TOGGLE
-# =========================
-if "theme_mode" not in st.session_state:
-    st.session_state.theme_mode = "Dark"
-
-with st.sidebar:
-    theme_mode = st.radio(
-        "Theme",
-        ["Dark", "Light"],
-        index=0 if st.session_state.theme_mode == "Dark" else 1,
-    )
-st.session_state.theme_mode = theme_mode
-
-# =========================
-# GLOBAL STYLING (LIGHT / DARK)
-# =========================
-if theme_mode == "Dark":
-    main_bg = "rgba(0, 0, 0, 0.86)"
-    main_text = "#ffffff"
-    sidebar_bg = "#111111"
-    sidebar_text = "#f5f5f5"
-    input_bg_main = "#222222"
-    input_text_main = "#ffffff"
-    input_bg_sidebar = "#2b2b2b"
-    input_text_sidebar = "#ffffff"
-else:  # Light mode
-    main_bg = "rgba(255, 255, 255, 0.96)"
-    main_text = "#111111"
-    sidebar_bg = "#f5f5f5"
-    sidebar_text = "#111111"
-    input_bg_main = "#ffffff"
-    input_text_main = "#111111"
-    input_bg_sidebar = "#ffffff"
-    input_text_sidebar = "#111111"
-
-st.markdown(
-    f"""
-    <style>
-    .stApp {{
-        background-image: url('{background_url}');
-        background-size: cover;
-        background-position: center;
-        background-attachment: fixed;
-    }}
-
-    .block-container {{
-        background-color: {main_bg};
-        padding: 2rem;
-        border-radius: 12px;
-        color: {main_text} !important;
-    }}
-
-    .block-container *:not(input):not(textarea):not(select) {{
-        color: {main_text} !important;
-    }}
-
-    .dataframe td {{
-        color: {main_text} !important;
-    }}
-
-    .stButton>button {{
-        background-color: rgba(255, 255, 255, 0.08);
-        color: {main_text};
-        border: 1px solid rgba(255, 255, 255, 0.8);
-        border-radius: 6px;
-    }}
-
-    .stButton>button:hover {{
-        background-color: rgba(255, 255, 255, 0.25);
-    }}
-
-    .footer {{
-        text-align: center;
-        font-size: 0.75rem;
-        opacity: 0.7;
-        margin-top: 2rem;
-        color: {main_text} !important;
-    }}
-
-    /* Sidebar */
-    [data-testid="stSidebar"] {{
-        background-color: {sidebar_bg} !important;
-    }}
-    [data-testid="stSidebar"] * {{
-        color: {sidebar_text} !important;
-    }}
-
-    /* Inputs in main panel */
-    .block-container input,
-    .block-container textarea,
-    .block-container select {{
-        background-color: {input_bg_main} !important;
-        color: {input_text_main} !important;
-    }}
-
-    /* Inputs in sidebar */
-    [data-testid="stSidebar"] input,
-    [data-testid="stSidebar"] textarea,
-    [data-testid="stSidebar"] select {{
-        background-color: {input_bg_sidebar} !important;
-        color: {input_text_sidebar} !important;
-    }}
-
-    /* PO-only labels */
-    .po-label {{
-        color: {main_text} !important;
-        font-weight: 600;
-        font-size: 0.9rem;
-        margin-bottom: 0.1rem;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# =========================
 # SESSION STATE DEFAULTS
 # =========================
 if "is_admin" not in st.session_state:
@@ -202,9 +88,103 @@ if "sales_raw_df" not in st.session_state:
     st.session_state.sales_raw_df = None
 if "vendor_df" not in st.session_state:
     st.session_state.vendor_df = None
+if "theme" not in st.session_state:
+    st.session_state.theme = "Dark"
 
 # =========================
-# HELPERS
+# THEME TOGGLE
+# =========================
+st.sidebar.markdown("### 🎨 Theme")
+theme_choice = st.sidebar.radio(
+    "Color mode",
+    ["Dark", "Light"],
+    index=0 if st.session_state.theme == "Dark" else 1,
+)
+st.session_state.theme = theme_choice
+
+# =========================
+# GLOBAL STYLING
+# =========================
+if st.session_state.theme == "Dark":
+    main_bg_color = "rgba(0, 0, 0, 0.85)"
+    main_text_color = "#ffffff"
+    table_text_color = "#ffffff"
+    sidebar_bg = "#111111"
+    sidebar_text = "#f5f5f5"
+else:
+    main_bg_color = "rgba(255, 255, 255, 0.94)"
+    main_text_color = "#111111"
+    table_text_color = "#111111"
+    sidebar_bg = "#f5f5f5"
+    sidebar_text = "#111111"
+
+st.markdown(
+    f"""
+    <style>
+    .stApp {{
+        background-image: url('{background_url}');
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }}
+
+    .block-container {{
+        background-color: {main_bg_color};
+        padding: 2rem;
+        border-radius: 12px;
+        color: {main_text_color} !important;
+    }}
+
+    /* Main content text, don't override input text */
+    .block-container *:not(input):not(textarea):not(select) {{
+        color: {main_text_color} !important;
+    }}
+
+    .dataframe td {{
+        color: {table_text_color} !important;
+    }}
+
+    .stButton>button {{
+        background-color: rgba(255, 255, 255, 0.08);
+        color: #ffffff;
+        border: 1px solid rgba(255, 255, 255, 0.8);
+        border-radius: 6px;
+    }}
+
+    .stButton>button:hover {{
+        background-color: rgba(255, 255, 255, 0.25);
+    }}
+
+    .footer {{
+        text-align: center;
+        font-size: 0.75rem;
+        opacity: 0.8;
+        margin-top: 2rem;
+        color: {main_text_color} !important;
+    }}
+
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {{
+        background-color: {sidebar_bg} !important;
+    }}
+    [data-testid="stSidebar"] * {{
+        color: {sidebar_text} !important;
+    }}
+
+    /* PO-only labels in main content */
+    .po-label {{
+        color: {main_text_color} !important;
+        font-weight: 600;
+        font-size: 0.9rem;
+        margin-bottom: 0.1rem;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# =========================
+# HELPER FUNCTIONS
 # =========================
 
 def normalize_col(col: str) -> str:
@@ -222,33 +202,6 @@ def detect_column(columns, aliases):
         if alias in norm_map:
             return norm_map[alias]
     return None
-
-
-def reheader_from_first_match(df: pd.DataFrame, alias_samples) -> pd.DataFrame:
-    """
-    Some BLAZE exports have 3–5 rows of metadata before the real header.
-    Scan first 10 rows and, if a row looks like a header, promote it.
-    """
-    try:
-        # Work on a copy so we don’t mutate original unexpectedly
-        tmp = df.copy()
-        max_scan = min(10, len(tmp))
-        alias_norm = set(alias_samples)
-
-        for i in range(max_scan):
-            row = tmp.iloc[i]
-            # Normalize row cells as if they might be column names
-            row_norm = [normalize_col(v) for v in row.astype(str).tolist()]
-            if any(r in alias_norm for r in row_norm):
-                # This row looks like the header
-                new_header = tmp.iloc[i].astype(str).str.lower()
-                tmp = tmp.iloc[i + 1 :].reset_index(drop=True)
-                tmp.columns = new_header
-                return tmp
-        return tmp
-    except Exception:
-        # Fallback: return original DF untouched if anything goes weird
-        return df
 
 
 def normalize_rebelle_category(raw):
@@ -343,79 +296,136 @@ def extract_size(text, context=None):
     return "unspecified"
 
 
-# =========================
-# GOOGLE SHEETS HELPERS (Vendor Tracker)
-# =========================
-def get_vendor_sheet_client():
-    """Build a gspread client from Streamlit secrets, if configured."""
-    if not GSHEETS_AVAILABLE:
-        return None, None
+def detect_header_row_generic(df0: pd.DataFrame):
+    """
+    Try to find a header row in messy exports by looking for a row
+    that has product-ish, category-ish, and quantity-ish fields.
+    """
+    for idx, row in df0.iterrows():
+        vals = [str(v).strip().lower() for v in row if pd.notna(v)]
+        if len(vals) < 3:
+            continue
+        has_product = any(
+            any(k in v for k in ["product", "item", "sku", "menu"]) for v in vals
+        )
+        has_category = any("category" in v for v in vals)
+        has_qty = any(
+            any(k in v for k in ["quantity", "qty", "units", "available", "on hand", "onhand"])
+            for v in vals
+        )
+        if has_product and has_category and has_qty:
+            return idx
+    return None
 
-    if "gcp_service_account" not in st.secrets:
-        return None, None
 
-    svc_info = dict(st.secrets["gcp_service_account"])
-    vendor_sheet_id = svc_info.get("VENDOR_SHEET_ID") or st.secrets.get(
-        "VENDOR_SHEET_ID", None
+def read_inventory_file(uploaded_file):
+    """
+    Read inventory CSV, handling Blaze/Dutchie-style header padding.
+    """
+    data = uploaded_file.read()
+    buf = io.BytesIO(data)
+    df0 = pd.read_csv(buf, header=None)
+    header_idx = detect_header_row_generic(df0)
+    if header_idx is not None:
+        header = df0.iloc[header_idx].astype(str).str.strip()
+        df = df0[(header_idx + 1):].copy()
+        df.columns = header
+        return df
+    buf.seek(0)
+    return pd.read_csv(buf)
+
+
+def read_sales_file(uploaded_file):
+    """
+    Read sales XLSX, handling Blaze/Dutchie-style header padding.
+    """
+    data = uploaded_file.read()
+    buf = io.BytesIO(data)
+    df0 = pd.read_excel(buf, header=None)
+    header_idx = detect_header_row_generic(df0)
+    if header_idx is not None:
+        header = df0.iloc[header_idx].astype(str).str.strip()
+        df = df0[(header_idx + 1):].copy()
+        df.columns = header
+        return df
+    buf.seek(0)
+    return pd.read_excel(buf)
+
+
+def build_inventory_aliases(pos_hint: str):
+    """
+    Build alias lists for inventory columns, biased by POS hint
+    but still compatible with others (Option C).
+    """
+    name_aliases = [
+        "product", "productname", "item", "itemname", "name", "skuname", "skuid",
+    ]
+    cat_aliases = [
+        "category", "subcategory", "productcategory", "department", "mastercategory",
+    ]
+    qty_aliases = [
+        "available", "onhand", "onhandunits", "quantity", "qty", "quantityonhand",
+        "instock", "currentquantity",
+    ]
+
+    if pos_hint == "BLAZE":
+        qty_aliases += ["currentquantity", "current quantity"]
+    elif pos_hint == "Dutchie":
+        qty_aliases += ["availablefor sale", "availableforsale"]
+
+    return (
+        [normalize_col(a) for a in name_aliases],
+        [normalize_col(a) for a in cat_aliases],
+        [normalize_col(a) for a in qty_aliases],
     )
-    if not vendor_sheet_id:
-        return None, None
 
-    creds = Credentials.from_service_account_info(
-        svc_info,
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ],
+
+def build_sales_aliases(pos_hint: str):
+    """
+    Build alias lists for sales columns, biased by POS hint
+    but still compatible with others (Option C).
+    """
+    name_aliases = [
+        "product", "productname", "producttitle", "productid", "name",
+        "item", "itemname", "skuname", "sku", "description", "menuitem",
+    ]
+    qty_aliases = [
+        "quantitysold", "qtysold", "unitssold", "unitsold",
+        "units", "totalunits", "quantity", "quantity sold", "qty", "sold",
+        "total sold", "salesqty", "sales units",
+    ]
+    cat_aliases = [
+        "mastercategory", "category", "master_category", "productcategory",
+        "product category", "subcategory", "department", "dept",
+    ]
+
+    if pos_hint == "BLAZE":
+        name_aliases += ["product name"]
+        qty_aliases += ["quantity sold"]
+        cat_aliases += ["product category"]
+    elif pos_hint == "Dutchie":
+        name_aliases += ["menu item", "product name"]
+        qty_aliases += ["units sold"]
+        cat_aliases += ["category"]
+
+    return (
+        [normalize_col(a) for a in name_aliases],
+        [normalize_col(a) for a in qty_aliases],
+        [normalize_col(a) for a in cat_aliases],
     )
-    client = gspread.authorize(creds)
-    return client, vendor_sheet_id
 
 
-def load_vendor_sheet():
-    """Load vendor table from Google Sheets if configured, else None."""
-    try:
-        client, sheet_id = get_vendor_sheet_client()
-        if not client or not sheet_id:
-            return None
-
-        sh = client.open_by_key(sheet_id)
-        ws = sh.sheet1
-        data = ws.get_all_records()
-        if not data:
-            return pd.DataFrame(
-                columns=[
-                    "Vendor",
-                    "Available Brands",
-                    "Spotlight Products",
-                    "Contact Name",
-                    "Email",
-                    "Net Terms",
-                    "Notes",
-                ]
-            )
-        return pd.DataFrame(data)
-    except Exception:
-        return None
-
-
-def save_vendor_sheet(df: pd.DataFrame):
-    """Overwrite vendor sheet with current dataframe."""
-    try:
-        client, sheet_id = get_vendor_sheet_client()
-        if not client or not sheet_id:
-            return False
-
-        sh = client.open_by_key(sheet_id)
-        ws = sh.sheet1
-        ws.clear()
-        # Write headers + data
-        rows = [list(df.columns)] + df.astype(str).values.tolist()
-        ws.update("A1", rows)
-        return True
-    except Exception:
-        return False
-
+def guess_pos_from_columns(columns):
+    """
+    Very light POS guess from column names (Option C).
+    """
+    cols = [str(c).lower() for c in columns]
+    joined = " ".join(cols)
+    if any(k in joined for k in ["member id", "canabis", "metrc sale id", "cogs"]):
+        return "BLAZE"
+    if any(k in joined for k in ["menu item", "discounts", "dutchie"]):
+        return "Dutchie"
+    return None
 
 # =========================
 # PDF GENERATION FOR PO
@@ -630,10 +640,124 @@ def generate_po_pdf(
     buffer.close()
     return pdf
 
+# =========================
+# GOOGLE SHEETS HELPERS (Vendor Tracker)
+# =========================
+
+def get_vendor_sheet_config():
+    """
+    Read service account + vendor sheet ID from Streamlit secrets
+    without exposing anything. Supports:
+      - st.secrets["VENDOR_SHEET_ID"]
+      - st.secrets["gcp_service_account"]["VENDOR_SHEET_ID"]
+    """
+    try:
+        svc_info = st.secrets.get("gcp_service_account", None)
+    except Exception:
+        svc_info = None
+
+    vendor_sheet_id = None
+    try:
+        vendor_sheet_id = st.secrets.get("VENDOR_SHEET_ID", None)
+    except Exception:
+        vendor_sheet_id = None
+
+    if vendor_sheet_id is None and isinstance(svc_info, dict):
+        vendor_sheet_id = svc_info.get("VENDOR_SHEET_ID")
+
+    if isinstance(svc_info, dict) and vendor_sheet_id:
+        return svc_info, vendor_sheet_id
+    return None, None
+
+
+def load_vendor_df():
+    """
+    Load vendor table from Google Sheets if configured; otherwise fall back to
+    session-only DataFrame.
+    """
+    # Try Google Sheets backend
+    if GSPREAD_AVAILABLE:
+        svc_info, sheet_id = get_vendor_sheet_config()
+        if svc_info and sheet_id:
+            try:
+                scope = [
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive",
+                ]
+                creds = Credentials.from_service_account_info(svc_info, scopes=scope)
+                client = gspread.authorize(creds)
+                sh = client.open_by_key(sheet_id)
+                ws = sh.sheet1
+                records = ws.get_all_records()
+                if records:
+                    df = pd.DataFrame(records)
+                else:
+                    df = pd.DataFrame(
+                        columns=[
+                            "Vendor Name",
+                            "Available Brands",
+                            "Spotlight Products",
+                            "Primary Contact",
+                            "Email",
+                            "Phone",
+                            "Net Terms",
+                            "Notes",
+                        ]
+                    )
+                return df, "google"
+            except Exception:
+                pass  # fall through to session only
+
+    # Session-only fallback
+    if st.session_state.vendor_df is None:
+        st.session_state.vendor_df = pd.DataFrame(
+            columns=[
+                "Vendor Name",
+                "Available Brands",
+                "Spotlight Products",
+                "Primary Contact",
+                "Email",
+                "Phone",
+                "Net Terms",
+                "Notes",
+            ]
+        )
+    return st.session_state.vendor_df.copy(), "session"
+
+
+def save_vendor_df(df: pd.DataFrame, backend: str):
+    """
+    Save vendor table either to Google Sheets (if configured) or to session.
+    """
+    if backend == "google" and GSPREAD_AVAILABLE:
+        svc_info, sheet_id = get_vendor_sheet_config()
+        if svc_info and sheet_id:
+            try:
+                scope = [
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive",
+                ]
+                creds = Credentials.from_service_account_info(svc_info, scopes=scope)
+                client = gspread.authorize(creds)
+                sh = client.open_by_key(sheet_id)
+                ws = sh.sheet1
+                # Clear + update
+                ws.clear()
+                if not df.empty:
+                    ws.update(
+                        [df.columns.tolist()] + df.astype(str).fillna("").values.tolist()
+                    )
+                return
+            except Exception:
+                pass  # fall through to session storage
+
+    # Session-only storage
+    st.session_state.vendor_df = df.copy()
 
 # =========================
 # 🔐 ADMIN + TRIAL GATE
 # =========================
+
 st.sidebar.markdown("### 👑 Admin Login")
 
 if not st.session_state.is_admin:
@@ -680,9 +804,7 @@ if not st.session_state.is_admin:
 
         if remaining.total_seconds() <= 0:
             st.sidebar.error("⛔ Trial expired. Please contact the vendor for full access.")
-            st.error(
-                "The 24-hour trial has expired. Contact the vendor to purchase a full license."
-            )
+            st.error("The 24-hour trial has expired. Contact the vendor to purchase a full license.")
             st.stop()
         else:
             hours_left = int(remaining.total_seconds() // 3600)
@@ -700,7 +822,8 @@ st.markdown("---")
 if not PLOTLY_AVAILABLE:
     st.warning(
         "⚠️ Plotly is not installed in this environment. Charts will be disabled.\n\n"
-        "If using Streamlit Cloud, add `plotly` and `reportlab` to your `requirements.txt` file."
+        "If using Streamlit Cloud, add `plotly` and `reportlab` (and `gspread`, `google-auth`) "
+        "to your `requirements.txt` file."
     )
 
 # =========================
@@ -708,9 +831,8 @@ if not PLOTLY_AVAILABLE:
 # =========================
 section = st.sidebar.radio(
     "App Section",
-    ["📊 Inventory Dashboard", "🧾 PO Builder", "📒 Vendor Tracker"],
+    ["📊 Inventory Dashboard", "🧾 PO Builder", "🤝 Vendor Tracker"],
     index=0,
-    key="app_section",
 )
 
 # ============================================================
@@ -718,79 +840,63 @@ section = st.sidebar.radio(
 # ============================================================
 if section == "📊 Inventory Dashboard":
 
-    # Data source selector
-    st.sidebar.markdown("### 🧩 Data Source")
-    data_source = st.sidebar.selectbox(
-        "Select POS / Data Source",
+    # Data source selector (for future hooks)
+    st.sidebar.markdown("### 🧩 POS / Data Source")
+    selected_source = st.sidebar.selectbox(
+        "Select POS / Data Source (hint)",
         ["BLAZE", "Dutchie"],
-        index=0,
-        help="Changes how column names are interpreted. Files are still just CSV/XLSX exports.",
+        index=1,
+        help="Used as a hint; actual detection is automatic from file headers.",
     )
 
     st.sidebar.header("📂 Upload Core Reports")
 
-    inv_file = st.sidebar.file_uploader("Inventory CSV", type=["csv", "xlsx"])
-    product_sales_file = st.sidebar.file_uploader("Product Sales / Total Sales Detail", type=["xlsx", "csv"])
+    inv_file = st.sidebar.file_uploader("Inventory Detail (CSV)", type=["csv"])
+    product_sales_file = st.sidebar.file_uploader(
+        "Sales by Product / Total Sales Detail (XLSX)",
+        type=["xlsx", "xls"],
+    )
 
     st.sidebar.markdown("---")
     st.sidebar.header("⚙️ Forecast Settings")
     doh_threshold = st.sidebar.number_input("Target Days on Hand", 1, 60, 21)
     velocity_adjustment = st.sidebar.number_input("Velocity Adjustment", 0.01, 5.0, 0.5)
 
-    date_diff = st.sidebar.slider("Days in Sales Period", 7, 90, 60)
+    date_diff = st.sidebar.slider("Days in Sales Period", 7, 120, 60)
 
     # Cache raw dataframes when new files are uploaded
     if inv_file is not None:
-        if inv_file.name.lower().endswith(".xlsx"):
-            inv_df_raw = pd.read_excel(inv_file, header=None)
-        else:
-            inv_df_raw = pd.read_csv(inv_file, header=None)
+        inv_df_raw = read_inventory_file(inv_file)
         st.session_state.inv_raw_df = inv_df_raw
 
     if product_sales_file is not None:
-        if product_sales_file.name.lower().endswith(".xlsx"):
-            sales_raw_raw = pd.read_excel(product_sales_file, header=None)
-        else:
-            sales_raw_raw = pd.read_csv(product_sales_file, header=None)
+        sales_raw_raw = read_sales_file(product_sales_file)
         st.session_state.sales_raw_df = sales_raw_raw
 
     if st.session_state.inv_raw_df is not None and st.session_state.sales_raw_df is not None:
         try:
-            # --- Clean header rows for Blaze / mixed exports ---
-            inv_df = reheader_from_first_match(
-                st.session_state.inv_raw_df.copy(),
-                alias_samples=[normalize_col(a) for a in ["product", "product sku", "product name"]],
-            )
-            sales_raw = reheader_from_first_match(
-                st.session_state.sales_raw_df.copy(),
-                alias_samples=[normalize_col(a) for a in ["product", "product name", "product category", "quantity sold"]],
-            )
+            inv_df = st.session_state.inv_raw_df.copy()
+            sales_raw = st.session_state.sales_raw_df.copy()
 
             # -------- INVENTORY --------
             inv_df.columns = inv_df.columns.astype(str).str.strip().str.lower()
 
-            # Auto-detect core inventory columns (supports BLAZE & Dutchie)
-            inv_name_aliases = [
-                "product", "productname", "item", "itemname", "name", "skuname", "skuid",
-                "productsku", "sku"
-            ]
-            inv_cat_aliases = [
-                "category", "subcategory", "productcategory", "product category",
-                "department", "mastercategory", "producttype"
-            ]
-            inv_qty_aliases = [
-                "available", "onhand", "onhandunits", "quantity", "qty", "quantityonhand",
-                "instock", "currentquantity", "current quantity", "sold quantity"
-            ]
+            # Auto-detect POS from inventory columns (Option C)
+            inv_pos_guess = guess_pos_from_columns(inv_df.columns)
+            pos_hint_inventory = inv_pos_guess or selected_source
 
-            name_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_name_aliases])
-            cat_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_cat_aliases])
-            qty_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_qty_aliases])
+            inv_name_aliases, inv_cat_aliases, inv_qty_aliases = build_inventory_aliases(
+                pos_hint_inventory
+            )
+
+            name_col = detect_column(inv_df.columns, inv_name_aliases)
+            cat_col = detect_column(inv_df.columns, inv_cat_aliases)
+            qty_col = detect_column(inv_df.columns, inv_qty_aliases)
 
             if not (name_col and cat_col and qty_col):
                 st.error(
                     "Could not auto-detect inventory columns (product / category / on-hand). "
-                    "Check your Inventory Detail export headers."
+                    "Check your Inventory export headers."
                 )
                 st.stop()
 
@@ -822,44 +928,34 @@ if section == "📊 Inventory Dashboard":
             )
 
             # -------- SALES --------
-            sales_raw.columns = sales_raw.columns.astype(str).str.lower()
+            sales_raw.columns = sales_raw.columns.astype(str).str.strip().str.lower()
 
-            # Blaze "Total Sales Detail" hints
-            if data_source == "BLAZE":
-                # Try to force certain col names if they exist
-                # (but still rely on detect_column so it's flexible)
-                pass  # we just allow detect_column to do its job with Blaze-friendly aliases
+            # Auto-detect POS from sales columns (Option C)
+            sales_pos_guess = guess_pos_from_columns(sales_raw.columns)
+            pos_hint_sales = sales_pos_guess or selected_source
+
+            sales_name_aliases, sales_qty_aliases, sales_cat_aliases = build_sales_aliases(
+                pos_hint_sales
+            )
 
             # Auto-detect product name column
-            sales_name_aliases = [
-                "product", "productname", "product title", "producttitle", "product name",
-                "item", "itemname", "skuname", "sku", "description", "product sku"
-            ]
             name_col_sales = detect_column(
-                sales_raw.columns, [normalize_col(a) for a in sales_name_aliases]
+                sales_raw.columns, sales_name_aliases
             )
 
             # Auto-detect quantity/units sold column
-            qty_aliases = [
-                "quantitysold", "quantity sold", "qtysold", "unitssold", "unitsold",
-                "units", "totalunits", "quantity", "quantity_sold", "qty", "sold quantity"
-            ]
             qty_col_sales = detect_column(
-                sales_raw.columns, [normalize_col(a) for a in qty_aliases]
+                sales_raw.columns, sales_qty_aliases
             )
 
             # Auto-detect category/mastercategory column
-            mc_aliases = [
-                "mastercategory", "category", "master_category", "productcategory",
-                "product category"
-            ]
-            mc_col = detect_column(sales_raw.columns, [normalize_col(a) for a in mc_aliases])
+            mc_col = detect_column(sales_raw.columns, sales_cat_aliases)
 
             if not (name_col_sales and qty_col_sales and mc_col):
                 st.error(
-                    "Product Sales file detected but could not find required columns.\n\n"
-                    "Tried various forms of product name, category / product category, "
-                    "and quantity / quantity sold / units sold. Check your POS export headers."
+                    "Product Sales report missing a recognizable product, quantity, or category column.\n\n"
+                    "Tip: Use Dutchie 'Total Sales by Product' or Blaze 'Total Sales Detail / Sales by Product' "
+                    "exports without manually editing headers."
                 )
                 st.stop()
 
@@ -1036,6 +1132,7 @@ if section == "📊 Inventory Dashboard":
             ]
             display_cols = [c for c in display_cols if c in detail_view.columns]
 
+            # Use same category ordering for expanders
             for cat in sorted(detail_view["subcategory"].unique(), key=cat_sort_key):
                 group = detail_view[detail_view["subcategory"] == cat]
                 with st.expander(cat.title()):
@@ -1046,7 +1143,7 @@ if section == "📊 Inventory Dashboard":
                     )
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error processing files: {e}")
 
     else:
         st.info("Upload inventory + product sales files to continue.")
@@ -1058,7 +1155,7 @@ elif section == "🧾 PO Builder":
     st.subheader("🧾 Purchase Order Builder")
 
     st.markdown(
-        "The words above each PO field are styled for readability in both light and dark mode."
+        "The words above each PO field are styled for readability against the background."
     )
 
     # -------------------------
@@ -1240,47 +1337,30 @@ elif section == "🧾 PO Builder":
 # PAGE 3 – VENDOR TRACKER
 # ============================================================
 else:
-    st.subheader("📒 Vendor Tracker")
-
-    # Initialize vendor_df (from sheets or empty) once
-    if st.session_state.vendor_df is None:
-        df_loaded = load_vendor_sheet()
-        if df_loaded is None or df_loaded.empty:
-            df_loaded = pd.DataFrame(
-                columns=[
-                    "Vendor",
-                    "Available Brands",
-                    "Spotlight Products",
-                    "Contact Name",
-                    "Email",
-                    "Net Terms",
-                    "Notes",
-                ]
-            )
-        st.session_state.vendor_df = df_loaded
+    st.subheader("🤝 Vendor Tracker")
 
     st.markdown(
-        "Use this table to track vendors, brands, contacts, net terms, and notes. "
-        "Changes are autosaved for this session and, if configured, to Google Sheets."
+        "Track vendor contacts, brands, spotlight SKUs, net terms, and notes. "
+        "Edits are autosaved each time the app runs."
     )
+
+    vendor_df, backend = load_vendor_df()
 
     edited_df = st.data_editor(
-        st.session_state.vendor_df,
+        vendor_df,
         num_rows="dynamic",
         use_container_width=True,
+        key="vendor_editor",
     )
 
-    st.session_state.vendor_df = edited_df
+    save_vendor_df(edited_df, backend)
 
-    # Try to save to Google Sheets if configured
-    saved_to_sheets = save_vendor_sheet(edited_df)
-
-    if saved_to_sheets:
-        st.info("Vendor list autosaved to Google Sheets.")
+    if backend == "google":
+        st.caption("✅ Autosaving vendor table to Google Sheets (service account).")
     else:
         st.caption(
-            "Autosave is active for this session. Configure Google Sheets credentials in "
-            "Streamlit secrets to persist across sessions."
+            "📒 Autosave is session-only. Configure Google Sheets in Streamlit secrets "
+            "to persist vendor data across sessions."
         )
 
 # =========================
