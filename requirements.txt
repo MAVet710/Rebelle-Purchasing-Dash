@@ -7,3 +7,5 @@ reportlab
 plotly
 pandas
 numpy
+gspread
+google-auth
