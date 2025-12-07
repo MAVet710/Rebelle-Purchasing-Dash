@@ -302,7 +302,7 @@ def read_sales_file(uploaded_file):
     """
     Read Excel sales report with smart header detection.
     Looks for a row that contains something like 'category' and 'product'
-    (Dutchie 'Total Sales by Product' style) and uses that as the header.
+    and uses that as the header.
     """
     uploaded_file.seek(0)
     tmp = pd.read_excel(uploaded_file, header=None)
@@ -316,6 +316,24 @@ def read_sales_file(uploaded_file):
     uploaded_file.seek(0)
     df = pd.read_excel(uploaded_file, header=header_row)
     return df
+
+
+def parse_numeric_quantity(val):
+    """
+    Take Blaze-style quantity strings like '1.0 ea', '3 units'
+    and return just the numeric portion as float.
+    """
+    if pd.isna(val):
+        return 0.0
+    s = str(val)
+    # grab first signed/decimal number
+    m = re.search(r"[-+]?\d*\.?\d+", s.replace(",", ""))
+    if m:
+        try:
+            return float(m.group())
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 # =========================
@@ -791,7 +809,387 @@ if section == "📊 Inventory Dashboard":
                     "Tip: Use Dutchie 'Product Sales' or Blaze 'Sales by Product' exports "
                     "without manually editing the headers."
                 )
-           
+                st.stop()
 
+            # Normalize to internal names
+            sales_raw = sales_raw.rename(
+                columns={
+                    name_col_sales: "product_name",
+                    qty_col_sales: "unitssold",
+                    mc_col: "mastercategory",
+                }
+            )
 
-::contentReference[oaicite:0]{index=0}
+            # 🔢 Clean Blaze-style quantities like "1.0 ea" into pure numbers
+            sales_raw["unitssold"] = sales_raw["unitssold"].apply(parse_numeric_quantity)
+
+            # normalize categories
+            sales_raw["mastercategory"] = sales_raw["mastercategory"].apply(normalize_rebelle_category)
+
+            # Filter out accessories / 'all' (anything with "accessor")
+            sales_df = sales_raw[
+                ~sales_raw["mastercategory"].astype(str).str.contains("accessor")
+                & (sales_raw["mastercategory"] != "all")
+            ].copy()
+
+            # Add package size on the sales side (granular per size)
+            sales_df["packagesize"] = sales_df.apply(
+                lambda row: extract_size(row["product_name"], row["mastercategory"]),
+                axis=1,
+            )
+
+            # Category + size level velocity
+            sales_summary = (
+                sales_df.groupby(["mastercategory", "packagesize"])["unitssold"]
+                .sum()
+                .reset_index()
+            )
+            sales_summary["avgunitsperday"] = (
+                sales_summary["unitssold"] / date_diff
+            ) * velocity_adjustment
+
+            # Merge inventory summary with size-level velocity
+            detail = pd.merge(
+                inv_summary,
+                sales_summary,
+                how="left",
+                left_on=["subcategory", "packagesize"],
+                right_on=["mastercategory", "packagesize"],
+            ).fillna(0)
+
+            # --- Ensure Flower 28g / 1oz always shows ---
+            flower_mask = detail["subcategory"].str.contains("flower", na=False)
+            flower_cats = detail.loc[flower_mask, "subcategory"].unique()
+
+            missing_rows = []
+            for cat in flower_cats:
+                if not ((detail["subcategory"] == cat) & (detail["packagesize"] == "28g")).any():
+                    missing_rows.append(
+                        {
+                            "subcategory": cat,
+                            "strain_type": "unspecified",
+                            "packagesize": "28g",
+                            "onhandunits": 0,
+                            "mastercategory": cat,
+                            "unitssold": 0,
+                            "avgunitsperday": 0,
+                        }
+                    )
+
+            if missing_rows:
+                detail = pd.concat([detail, pd.DataFrame(missing_rows)], ignore_index=True)
+
+            # DOH + Reorder (granular per row)
+            detail["daysonhand"] = np.where(
+                detail["avgunitsperday"] > 0,
+                detail["onhandunits"] / detail["avgunitsperday"],
+                0,
+            )
+            detail["daysonhand"] = (
+                detail["daysonhand"]
+                .replace([np.inf, -np.inf], 0)
+                .fillna(0)
+                .astype(int)
+            )
+
+            detail["reorderqty"] = np.where(
+                detail["daysonhand"] < doh_threshold,
+                np.ceil((doh_threshold - detail["daysonhand"]) * detail["avgunitsperday"]),
+                0,
+            ).astype(int)
+
+            def tag(row):
+                if row["daysonhand"] <= 7:
+                    return "1 – Reorder ASAP"
+                if row["daysonhand"] <= 21:
+                    return "2 – Watch Closely"
+                if row["avgunitsperday"] == 0:
+                    return "4 – Dead Item"
+                return "3 – Comfortable Cover"
+
+            detail["reorderpriority"] = detail.apply(tag, axis=1)
+
+            # =======================
+            # SUMMARY + CLICK FILTERS
+            # =======================
+            st.markdown("### Inventory Summary")
+
+            total_units = int(detail["unitssold"].sum())
+            reorder_asap = (detail["reorderpriority"] == "1 – Reorder ASAP").sum()
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button(
+                    f"Units Sold (Granular Size-Level): {total_units}",
+                    key="btn_total_units",
+                ):
+                    st.session_state.metric_filter = "All"
+            with col2:
+                if st.button(
+                    f"Reorder ASAP (Lines): {reorder_asap}",
+                    key="btn_reorder_asap",
+                ):
+                    st.session_state.metric_filter = "Reorder ASAP"
+
+            # Apply metric filter to detail for display
+            if st.session_state.metric_filter == "Reorder ASAP":
+                detail_view = detail[detail["reorderpriority"] == "1 – Reorder ASAP"].copy()
+            else:
+                detail_view = detail.copy()
+
+            st.markdown(
+                f"*Current filter:* **{st.session_state.metric_filter}**"
+            )
+
+            st.markdown("### Forecast Table")
+
+            def red_low(val):
+                try:
+                    v = int(val)
+                    return "color:#FF3131" if v < doh_threshold else ""
+                except Exception:
+                    return ""
+
+            # Category filter (ordered by Rebelle categories first) **after** metric filter
+            all_cats = sorted(detail_view["subcategory"].unique())
+
+            def cat_sort_key(c):
+                c_low = str(c).lower()
+                if c_low in REB_CATEGORIES:
+                    return (REB_CATEGORIES.index(c_low), c_low)
+                return (len(REB_CATEGORIES), c_low)
+
+            all_cats_sorted = sorted(all_cats, key=cat_sort_key)
+
+            selected_cats = st.sidebar.multiselect(
+                "Visible Categories",
+                all_cats_sorted,
+                default=all_cats_sorted,
+            )
+            detail_view = detail_view[detail_view["subcategory"].isin(selected_cats)]
+
+            # Make sure cannabis type (strain_type) is visible
+            display_cols = [
+                "mastercategory",
+                "subcategory",
+                "strain_type",
+                "packagesize",
+                "onhandunits",
+                "unitssold",
+                "avgunitsperday",
+                "daysonhand",
+                "reorderqty",
+                "reorderpriority",
+            ]
+            display_cols = [c for c in display_cols if c in detail_view.columns]
+
+            # Use same category ordering for expanders
+            for cat in sorted(detail_view["subcategory"].unique(), key=cat_sort_key):
+                group = detail_view[detail_view["subcategory"] == cat]
+                with st.expander(cat.title()):
+                    g = group[display_cols].copy()
+                    st.dataframe(
+                        g.style.applymap(red_low, subset=["daysonhand"]),
+                        use_container_width=True,
+                    )
+
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    else:
+        st.info("Upload inventory + product sales files to continue.")
+
+# ============================================================
+# PAGE 2 – PO BUILDER
+# ============================================================
+else:
+    st.subheader("🧾 Purchase Order Builder")
+
+    st.markdown(
+        "The words above each PO field are white on the dark background for clarity."
+    )
+
+    # -------------------------
+    # HEADER INFO
+    # -------------------------
+    st.markdown("### PO Header")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown('<div class="po-label">Store / Ship-To Name</div>', unsafe_allow_html=True)
+        store_name = st.text_input("", value="Rebelle Cannabis", key="store_name")
+
+        st.markdown('<div class="po-label">Store #</div>', unsafe_allow_html=True)
+        store_number = st.text_input("", key="store_number")
+
+        st.markdown('<div class="po-label">Store Address</div>', unsafe_allow_html=True)
+        store_address = st.text_input("", key="store_address")
+
+        st.markdown('<div class="po-label">Store Phone</div>', unsafe_allow_html=True)
+        store_phone = st.text_input("", key="store_phone")
+
+        st.markdown('<div class="po-label">Buyer / Contact Name</div>', unsafe_allow_html=True)
+        store_contact = st.text_input("", key="store_contact")
+
+    with col2:
+        st.markdown('<div class="po-label">Vendor Name</div>', unsafe_allow_html=True)
+        vendor_name = st.text_input("", key="vendor_name")
+
+        st.markdown('<div class="po-label">Vendor License Number</div>', unsafe_allow_html=True)
+        vendor_license = st.text_input("", key="vendor_license")
+
+        st.markdown('<div class="po-label">Vendor Address</div>', unsafe_allow_html=True)
+        vendor_address = st.text_input("", key="vendor_address")
+
+        st.markdown('<div class="po-label">Vendor Contact / Email</div>', unsafe_allow_html=True)
+        vendor_contact = st.text_input("", key="vendor_contact")
+
+        st.markdown('<div class="po-label">PO Number</div>', unsafe_allow_html=True)
+        po_number = st.text_input("", key="po_number")
+
+        st.markdown('<div class="po-label">PO Date</div>', unsafe_allow_html=True)
+        po_date = st.date_input("", datetime.today(), key="po_date")
+
+        st.markdown('<div class="po-label">Payment Terms</div>', unsafe_allow_html=True)
+        terms = st.text_input("", value="Net 30", key="terms")
+
+    st.markdown('<div class="po-label">PO Notes / Special Instructions</div>', unsafe_allow_html=True)
+    notes = st.text_area("", "", height=70, key="notes")
+
+    st.markdown("---")
+
+    # -------------------------
+    # LINE ITEMS
+    # -------------------------
+    st.markdown("### Line Items")
+
+    num_lines = st.number_input("Number of Line Items", 1, 50, 5)
+
+    items = []
+    for i in range(int(num_lines)):
+        with st.expander(f"Line {i + 1}", expanded=(i < 3)):
+            c1, c2, c3, c4, c5, c6 = st.columns([1.2, 2.5, 1.4, 1.2, 1.2, 1.3])
+
+            with c1:
+                st.markdown('<div class="po-label">SKU ID</div>', unsafe_allow_html=True)
+                sku = st.text_input("", key=f"sku_{i}")
+
+            with c2:
+                st.markdown('<div class="po-label">SKU Name / Description</div>', unsafe_allow_html=True)
+                desc = st.text_input("", key=f"desc_{i}")
+
+            with c3:
+                st.markdown('<div class="po-label">Strain / Type</div>', unsafe_allow_html=True)
+                strain = st.text_input("", key=f"strain_{i}")
+
+            with c4:
+                st.markdown('<div class="po-label">Size (e.g. 3.5g)</div>', unsafe_allow_html=True)
+                size = st.text_input("", key=f"size_{i}")
+
+            with c5:
+                st.markdown('<div class="po-label">Qty</div>', unsafe_allow_html=True)
+                qty = st.number_input("", min_value=0, step=1, key=f"qty_{i}")
+
+            with c6:
+                st.markdown('<div class="po-label">Unit Price ($)</div>', unsafe_allow_html=True)
+                price = st.number_input("", min_value=0.0, step=0.01, key=f"price_{i}")
+
+            line_total = qty * price
+            st.markdown(f"**Line Total:** ${line_total:,.2f}")
+
+            items.append(
+                {
+                    "SKU": sku,
+                    "Description": desc,
+                    "Strain": strain,
+                    "Size": size,
+                    "Qty": qty,
+                    "Unit Price": price,
+                    "Line Total": line_total,
+                }
+            )
+
+    po_df = pd.DataFrame(items)
+    po_df = po_df[
+        (po_df["SKU"].astype(str).str.strip() != "") |
+        (po_df["Description"].astype(str).str.strip() != "") |
+        (po_df["Qty"] > 0)
+    ]
+
+    st.markdown("---")
+
+    # -------------------------
+    # TOTALS + PDF EXPORT
+    # -------------------------
+    if not po_df.empty:
+
+        subtotal = float(po_df["Line Total"].sum())
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown('<div class="po-label">Tax Rate (%)</div>', unsafe_allow_html=True)
+            tax_rate = st.number_input("", 0.0, 30.0, 0.0, key="tax_rate")
+        with c2:
+            st.markdown('<div class="po-label">Discount ($)</div>', unsafe_allow_html=True)
+            discount = st.number_input("", 0.0, step=0.01, key="discount")
+        with c3:
+            st.markdown('<div class="po-label">Shipping / Fees ($)</div>', unsafe_allow_html=True)
+            shipping = st.number_input("", 0.0, step=0.01, key="shipping")
+
+        tax_amount = subtotal * (tax_rate / 100.0)
+        total = subtotal + tax_amount + shipping - discount
+
+        st.markdown("### Totals")
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("SUBTOTAL", f"${subtotal:,.2f}")
+        s2.metric("DISCOUNT", f"-${discount:,.2f}")
+        s3.metric("TAX", f"${tax_amount:,.2f}")
+        s4.metric("SHIPPING", f"${shipping:,.2f}")
+        s5.metric("TOTAL", f"${total:,.2f}")
+
+        st.markdown("### PO Review")
+        st.dataframe(po_df, use_container_width=True)
+
+        pdf_bytes = generate_po_pdf(
+            store_name,
+            store_number,
+            store_address,
+            store_phone,
+            store_contact,
+            vendor_name,
+            vendor_license,
+            vendor_address,
+            vendor_contact,
+            po_number,
+            po_date,
+            terms,
+            notes,
+            po_df,
+            subtotal,
+            discount,
+            tax_amount,
+            shipping,
+            total,
+        )
+
+        st.markdown("### Download")
+        st.download_button(
+            "📥 Download PO (PDF)",
+            data=pdf_bytes,
+            file_name=f"PO_{po_number or 'rebelle'}.pdf",
+            mime="application/pdf",
+        )
+
+    else:
+        st.info("Add at least one line item to generate totals and PDF.")
+
+# =========================
+# FOOTER
+# =========================
+st.markdown("---")
+year = datetime.now().year
+st.markdown(
+    f'<div class="footer">{LICENSE_FOOTER} • © {year}</div>',
+    unsafe_allow_html=True,
+)
