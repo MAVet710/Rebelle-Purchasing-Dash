@@ -628,13 +628,13 @@ section = st.sidebar.radio(
 # ============================================================
 if section == "📊 Inventory Dashboard":
 
-    # Data source selector (for future hooks)
+    # Data source selector
     st.sidebar.markdown("### 🧩 Data Source")
     data_source = st.sidebar.selectbox(
         "Select POS / Data Source",
         ["BLAZE", "Dutchie"],
         index=0,
-        help="Changes how column names are interpreted. Files are still just CSV/XLSX exports.",
+        help="Changes how column names are interpreted. Upload raw, unedited exports.",
     )
 
     st.sidebar.header("📂 Upload Core Reports")
@@ -678,53 +678,148 @@ if section == "📊 Inventory Dashboard":
             extra_sales_raw = read_sales_file(extra_sales_file)
             st.session_state.extra_sales_df = extra_sales_raw
         except Exception:
-            # Not critical – we can ignore failures here
             st.session_state.extra_sales_df = None
 
+    # Blaze coaching banner
+    if data_source == "BLAZE":
+        st.info(
+            "For **BLAZE**, upload the raw 'Export Product' (inventory) and "
+            "'Total Sales Detail' (sales) reports **without** editing headers or "
+            "copy/pasting columns. The app will handle Active filtering and status logic."
+        )
+
+    # ============================================================
+    # UPDATED INVENTORY + SALES LOGIC (BLAZE-AWARE + STRAIN COVERAGE)
+    # ============================================================
     if st.session_state.inv_raw_df is not None and st.session_state.sales_raw_df is not None:
         try:
             inv_df = st.session_state.inv_raw_df.copy()
             sales_raw = st.session_state.sales_raw_df.copy()
 
-            # -------- INVENTORY --------
-            inv_df.columns = inv_df.columns.str.strip().str.lower()
+            # ---------- INVENTORY HANDLING ----------
+            inv_df.columns = inv_df.columns.astype(str).str.strip()
 
-            # Auto-detect core inventory columns (supports BLAZE & Dutchie)
-            inv_name_aliases = [
-                "product", "productname", "item", "itemname", "name", "skuname", "skuid"
-            ]
-            inv_cat_aliases = [
-                "category", "subcategory", "productcategory", "department", "mastercategory"
-            ]
-            inv_qty_aliases = [
-                "available", "onhand", "onhandunits", "quantity", "qty",
-                "quantityonhand", "instock", "currentquantity", "current quantity"
-            ]
+            def inv_detect_name(cols):
+                aliases = [
+                    "product", "productname", "item", "itemname", "name",
+                    "skuname", "skuid"
+                ]
+                return detect_column(cols, [normalize_col(a) for a in aliases])
 
-            name_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_name_aliases])
-            cat_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_cat_aliases])
-            qty_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_qty_aliases])
+            def inv_detect_cat(cols):
+                aliases = [
+                    "category", "productcategory", "product category",
+                    "subcategory", "department", "mastercategory"
+                ]
+                return detect_column(cols, [normalize_col(a) for a in aliases])
 
-            if not (name_col and cat_col and qty_col):
+            def inv_detect_qty(cols):
+                aliases = [
+                    "available", "inventory available", "onhand", "onhandunits",
+                    "quantity", "qty", "quantityonhand",
+                    "instock", "currentquantity", "current quantity"
+                ]
+                return detect_column(cols, [normalize_col(a) for a in aliases])
+
+            # ---- BLAZE-SPECIFIC INVENTORY LOGIC ----
+            if data_source == "BLAZE":
+                # 1) Filter to Active products if column exists
+                active_col = None
+                for c in inv_df.columns:
+                    if normalize_col(c) == "active":
+                        active_col = c
+                        break
+                if active_col is not None:
+                    inv_df = inv_df[
+                        inv_df[active_col].astype(str).str.lower().isin(["true", "yes", "1"])
+                    ]
+
+                # 2) Name & category columns
+                if "Name" in inv_df.columns:
+                    name_col = "Name"
+                else:
+                    name_col = inv_detect_name(inv_df.columns)
+
+                if "Category" in inv_df.columns:
+                    cat_col = "Category"
+                else:
+                    cat_col = inv_detect_cat(inv_df.columns)
+
+                # 3) On-hand units:
+                # Prefer "Inventory Available" if present, otherwise sum usable "INV:" columns
+                inv_available_col = None
+                for c in inv_df.columns:
+                    if normalize_col(c) in ["inventoryavailable", "inventory_available"]:
+                        inv_available_col = c
+                        break
+
+                if inv_available_col is not None:
+                    qty_col = inv_available_col
+                    inv_df["onhandunits"] = pd.to_numeric(
+                        inv_df[qty_col], errors="coerce"
+                    ).fillna(0)
+                else:
+                    inv_cols = [c for c in inv_df.columns if c.lower().startswith("inv:")]
+                    use_cols = []
+                    for c in inv_cols:
+                        cl = c.lower()
+                        if "waste" in cl or "quarantine" in cl or "purgatory" in cl:
+                            continue
+                        use_cols.append(c)
+
+                    if not use_cols:
+                        # fallback to generic detection
+                        qty_col = inv_detect_qty(inv_df.columns)
+                        if qty_col is None:
+                            qty_col = inv_df.columns[-1]
+                        inv_df["onhandunits"] = pd.to_numeric(
+                            inv_df[qty_col], errors="coerce"
+                        ).fillna(0)
+                    else:
+                        inv_df["onhandunits"] = (
+                            inv_df[use_cols]
+                            .apply(pd.to_numeric, errors="coerce")
+                            .fillna(0)
+                            .sum(axis=1)
+                        )
+
+            else:
+                # ---- GENERIC (DUTCHIE OR OTHER) INVENTORY LOGIC ----
+                inv_df.columns = inv_df.columns.str.lower().str.strip()
+
+                name_col = inv_detect_name(inv_df.columns)
+                cat_col = inv_detect_cat(inv_df.columns)
+                qty_col = inv_detect_qty(inv_df.columns)
+
+                if qty_col is None:
+                    numeric_candidates = [
+                        c for c in inv_df.columns
+                        if inv_df[c].dtype in [np.int64, np.float64]
+                    ]
+                    qty_col = numeric_candidates[-1] if numeric_candidates else inv_df.columns[-1]
+
+                inv_df["onhandunits"] = pd.to_numeric(
+                    inv_df[qty_col], errors="coerce"
+                ).fillna(0)
+
+            # Sanity check for inventory columns
+            if not (name_col and cat_col):
                 st.error(
-                    "Could not auto-detect inventory columns (product / category / on-hand). "
-                    "Check your Inventory export headers."
+                    "Could not auto-detect inventory product / category columns.\n\n"
+                    "For Blaze, upload the raw 'Export Product' report with headers intact.\n"
+                    "For Dutchie, upload the Inventory / On-Hand export without renaming headers."
                 )
                 st.stop()
 
+            # Standardize inventory columns
             inv_df = inv_df.rename(
                 columns={
                     name_col: "itemname",
                     cat_col: "subcategory",
-                    qty_col: "onhandunits",
                 }
             )
 
-            inv_df["onhandunits"] = pd.to_numeric(inv_df["onhandunits"], errors="coerce").fillna(0)
-            # normalize to Rebelle canonical categories
             inv_df["subcategory"] = inv_df["subcategory"].apply(normalize_rebelle_category)
-
-            # Strain Type + Package Size
             inv_df["strain_type"] = inv_df.apply(
                 lambda x: extract_strain_type(x["itemname"], x["subcategory"]), axis=1
             )
@@ -732,68 +827,69 @@ if section == "📊 Inventory Dashboard":
                 lambda x: extract_size(x["itemname"], x["subcategory"]), axis=1
             )
 
-            # Group inventory by subcategory + strain + size
             inv_summary = (
                 inv_df.groupby(["subcategory", "strain_type", "packagesize"])["onhandunits"]
                 .sum()
                 .reset_index()
             )
 
-            # -------- SALES (qty-based ONLY) --------
-            sales_raw.columns = sales_raw.columns.astype(str).str.lower()
+            # ---------- SALES HANDLING ----------
+            sales_raw.columns = sales_raw.columns.astype(str).str.lower().str.strip()
 
-            # Auto-detect product name column
             sales_name_aliases = [
                 "product", "productname", "product title", "producttitle",
-                "productid", "name", "item", "itemname", "skuname",
-                "sku", "description"
+                "product name", "product_name", "item", "itemname",
+                "sku", "skuname", "description"
             ]
+            qty_aliases = [
+                "quantitysold", "quantity sold", "qtysold", "qty sold",
+                "unitssold", "units sold", "units", "totalunits",
+                "quantity", "qty", "items sold"
+            ]
+            mc_aliases = [
+                "mastercategory", "master category", "category",
+                "productcategory", "product category", "subcategory", "department"
+            ]
+
             name_col_sales = detect_column(
                 sales_raw.columns, [normalize_col(a) for a in sales_name_aliases]
             )
-
-            # Auto-detect quantity/units sold column – STRICTLY counts, not $$
-            qty_aliases = [
-                "quantitysold", "quantity sold",
-                "qtysold", "qty sold",
-                "itemsold", "item sold", "items sold",
-                "unitssold", "units sold", "unit sold", "unitsold", "units",
-                "totalunits", "total units",
-                "quantity", "qty",
-            ]
             qty_col_sales = detect_column(
                 sales_raw.columns, [normalize_col(a) for a in qty_aliases]
             )
+            mc_col = detect_column(
+                sales_raw.columns, [normalize_col(a) for a in mc_aliases]
+            )
 
-            # Extra safety: if the matched column is clearly a revenue column, reject it
-            if qty_col_sales is not None:
-                norm_qty_name = normalize_col(qty_col_sales)
-                revenue_like = {
-                    "sales", "netsales", "totalsales", "retailvalue",
-                    "grosssales", "saleamount"
-                }
-                if norm_qty_name in revenue_like:
-                    qty_col_sales = None
+            # BLAZE-specific filters on sales
+            if data_source == "BLAZE":
+                trans_status_col = None
+                trans_type_col = None
 
-            # Auto-detect category/mastercategory column
-            mc_aliases = [
-                "mastercategory", "category", "master_category",
-                "productcategory", "product category",
-                "department", "dept", "subcategory"
-            ]
-            mc_col = detect_column(sales_raw.columns, [normalize_col(a) for a in mc_aliases])
+                for c in sales_raw.columns:
+                    nc = normalize_col(c)
+                    if nc == "transstatus":
+                        trans_status_col = c
+                    elif nc == "transtype":
+                        trans_type_col = c
+
+                if trans_status_col is not None:
+                    sales_raw = sales_raw[
+                        sales_raw[trans_status_col].astype(str).str.lower().eq("completed")
+                    ]
+                if trans_type_col is not None:
+                    sales_raw = sales_raw[
+                        sales_raw[trans_type_col].astype(str).str.lower().eq("sale")
+                    ]
 
             if not (name_col_sales and qty_col_sales and mc_col):
                 st.error(
-                    "Product Sales file detected but could not find required columns.\n\n"
-                    "Looked for some variant of: product / product name, quantity or items sold, "
-                    "and category or product category.\n\n"
-                    "Tip: Use Dutchie 'Product Sales' or Blaze 'Sales by Product' exports "
-                    "without manually editing the headers."
+                    "Product Sales report missing a recognizable product, quantity, or category column.\n\n"
+                    "For Blaze, upload the raw 'Total Sales Detail' report.\n"
+                    "For Dutchie, use 'Total Sales by Product' or 'Product Sales' without renaming headers."
                 )
                 st.stop()
 
-            # Normalize to internal names
             sales_raw = sales_raw.rename(
                 columns={
                     name_col_sales: "product_name",
@@ -806,22 +902,21 @@ if section == "📊 Inventory Dashboard":
                 sales_raw["unitssold"], errors="coerce"
             ).fillna(0)
 
-            # normalize categories here as well
-            sales_raw["mastercategory"] = sales_raw["mastercategory"].apply(normalize_rebelle_category)
+            sales_raw["mastercategory"] = sales_raw["mastercategory"].apply(
+                normalize_rebelle_category
+            )
 
-            # Filter out accessories / 'all' (anything with "accessor")
+            # Drop accessories / "all"
             sales_df = sales_raw[
                 ~sales_raw["mastercategory"].astype(str).str.contains("accessor")
                 & (sales_raw["mastercategory"] != "all")
             ].copy()
 
-            # Add package size on the sales side (granular per size)
             sales_df["packagesize"] = sales_df.apply(
                 lambda row: extract_size(row["product_name"], row["mastercategory"]),
                 axis=1,
             )
 
-            # Category + size level velocity
             sales_summary = (
                 sales_df.groupby(["mastercategory", "packagesize"])["unitssold"]
                 .sum()
@@ -831,7 +926,7 @@ if section == "📊 Inventory Dashboard":
                 sales_summary["unitssold"] / date_diff
             ) * velocity_adjustment
 
-            # Merge inventory summary with size-level velocity
+            # ---------- MERGE INVENTORY + SALES ----------
             detail = pd.merge(
                 inv_summary,
                 sales_summary,
@@ -840,7 +935,7 @@ if section == "📊 Inventory Dashboard":
                 right_on=["mastercategory", "packagesize"],
             ).fillna(0)
 
-            # --- Ensure Flower 28g / 1oz always shows ---
+            # Ensure flower 28g rows always exist
             flower_mask = detail["subcategory"].str.contains("flower", na=False)
             flower_cats = detail.loc[flower_mask, "subcategory"].unique()
 
@@ -862,10 +957,45 @@ if section == "📊 Inventory Dashboard":
             if missing_rows:
                 detail = pd.concat([detail, pd.DataFrame(missing_rows)], ignore_index=True)
 
-            # DOH + Reorder (granular per row)
-            detail["daysonhand"] = np.where(
+            # ---------- STRAIN-LEVEL COVERAGE ----------
+            group_cols = ["subcategory", "strain_type"]
+
+            group_summary = (
+                detail.groupby(group_cols, as_index=False)
+                .agg(
+                    group_onhand=("onhandunits", "sum"),
+                    group_units_sold=("unitssold", "sum"),
+                    group_avgunitsperday=("avgunitsperday", "sum"),
+                )
+            )
+
+            detail = detail.merge(group_summary, on=group_cols, how="left")
+
+            # Effective velocity per row: use row-level if present, else strain-level
+            detail["eff_avgunitsperday"] = np.where(
                 detail["avgunitsperday"] > 0,
-                detail["onhandunits"] / detail["avgunitsperday"],
+                detail["avgunitsperday"],
+                detail["group_avgunitsperday"],
+            )
+
+            # Strain-level days-on-hand
+            detail["group_doh"] = np.where(
+                detail["group_avgunitsperday"] > 0,
+                detail["group_onhand"] / detail["group_avgunitsperday"],
+                0,
+            )
+            detail["group_doh"] = (
+                detail["group_doh"]
+                .replace([np.inf, -np.inf], 0)
+                .fillna(0)
+            )
+
+            # Row-level DOH:
+            # if this pack size has zero on hand → DOH = 0 (forces reorder suggestion),
+            # otherwise share the strain-level coverage across pack sizes.
+            detail["daysonhand"] = np.where(
+                detail["onhandunits"] > 0,
+                detail["group_doh"],
                 0,
             )
             detail["daysonhand"] = (
@@ -875,9 +1005,10 @@ if section == "📊 Inventory Dashboard":
                 .astype(int)
             )
 
+            # Reorder qty uses effective velocity and target DOH
             detail["reorderqty"] = np.where(
                 detail["daysonhand"] < doh_threshold,
-                np.ceil((doh_threshold - detail["daysonhand"]) * detail["avgunitsperday"]),
+                np.ceil((doh_threshold - detail["daysonhand"]) * detail["eff_avgunitsperday"]),
                 0,
             ).astype(int)
 
@@ -886,15 +1017,13 @@ if section == "📊 Inventory Dashboard":
                     return "1 – Reorder ASAP"
                 if row["daysonhand"] <= 21:
                     return "2 – Watch Closely"
-                if row["avgunitsperday"] == 0:
+                if row["eff_avgunitsperday"] == 0:
                     return "4 – Dead Item"
                 return "3 – Comfortable Cover"
 
             detail["reorderpriority"] = detail.apply(tag, axis=1)
 
-            # =======================
-            # SUMMARY + CLICK FILTERS
-            # =======================
+            # ---------- SUMMARY + UI ----------
             st.markdown("### Inventory Summary")
 
             total_units = int(detail["unitssold"].sum())
@@ -914,16 +1043,12 @@ if section == "📊 Inventory Dashboard":
                 ):
                     st.session_state.metric_filter = "Reorder ASAP"
 
-            # Apply metric filter to detail for display
             if st.session_state.metric_filter == "Reorder ASAP":
                 detail_view = detail[detail["reorderpriority"] == "1 – Reorder ASAP"].copy()
             else:
                 detail_view = detail.copy()
 
-            st.markdown(
-                f"*Current filter:* **{st.session_state.metric_filter}**"
-            )
-
+            st.markdown(f"*Current filter:* **{st.session_state.metric_filter}**")
             st.markdown("### Forecast Table")
 
             def red_low(val):
@@ -933,7 +1058,6 @@ if section == "📊 Inventory Dashboard":
                 except Exception:
                     return ""
 
-            # Category filter (ordered by Rebelle categories first) **after** metric filter
             all_cats = sorted(detail_view["subcategory"].unique())
 
             def cat_sort_key(c):
@@ -951,7 +1075,6 @@ if section == "📊 Inventory Dashboard":
             )
             detail_view = detail_view[detail_view["subcategory"].isin(selected_cats)]
 
-            # Make sure cannabis type (strain_type) is visible
             display_cols = [
                 "mastercategory",
                 "subcategory",
@@ -960,13 +1083,13 @@ if section == "📊 Inventory Dashboard":
                 "onhandunits",
                 "unitssold",
                 "avgunitsperday",
+                "eff_avgunitsperday",
                 "daysonhand",
                 "reorderqty",
                 "reorderpriority",
             ]
             display_cols = [c for c in display_cols if c in detail_view.columns]
 
-            # Use same category ordering for expanders
             for cat in sorted(detail_view["subcategory"].unique(), key=cat_sort_key):
                 group = detail_view[detail_view["subcategory"] == cat]
                 with st.expander(cat.title()):
