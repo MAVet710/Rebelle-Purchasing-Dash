@@ -138,46 +138,29 @@ st.markdown(
         color: {main_text} !important;
     }}
 
-    /* ========================
-       SIDEBAR – HIGH VISIBILITY
-       ======================== */
-
+    /* Sidebar: light, high-contrast for typing, with darker cards */
     [data-testid="stSidebar"] {{
-        background-color: #f9fafb !important;  /* very light grey */
-        color: #111111 !important;
+        background-color: #e5e7eb !important;  /* tailwind gray-200 */
     }}
-
-    /* All sidebar text */
     [data-testid="stSidebar"] * {{
         color: #111111 !important;
         font-size: 0.9rem;
     }}
-
-    /* Inputs in sidebar */
     [data-testid="stSidebar"] input,
     [data-testid="stSidebar"] textarea,
     [data-testid="stSidebar"] select {{
         background-color: #ffffff !important;
         color: #111111 !important;
         border-radius: 4px;
-        border: 1px solid #9ca3af !important;  /* grey border */
     }}
-
-    /* Sidebar radio / checkbox labels */
-    [data-testid="stSidebar"] [role="radiogroup"] label,
-    [data-testid="stSidebar"] [role="checkbox"] label {{
-        color: #111111 !important;
-    }}
-
-    /* File uploader dropzones */
-    [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {{
-        background-color: #ffffff !important;
-        border-radius: 8px !important;
-        border: 1px dashed #4b5563 !important;  /* darker grey for contrast */
-    }}
-
-    [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] div {{
-        color: #111111 !important;
+    /* File uploader / card background */
+    [data-testid="stSidebar"] .stFileUploader, 
+    [data-testid="stSidebar"] .stNumberInput, 
+    [data-testid="stSidebar"] .stSlider, 
+    [data-testid="stSidebar"] .stSelectbox {{
+        background-color: #d1d5db !important;  /* gray-300 */
+        padding: 0.35rem 0.5rem;
+        border-radius: 6px;
     }}
 
     /* PO-only labels in main content */
@@ -328,7 +311,7 @@ def read_sales_file(uploaded_file):
     """
     Read Excel sales report with smart header detection.
     Looks for a row that contains something like 'category' and 'product'
-    (Dutchie 'Total Sales by Product' style) and uses that as the header.
+    (Dutchie / BLAZE 'Total Sales by Product' style) and uses that as the header.
     """
     uploaded_file.seek(0)
     tmp = pd.read_excel(uploaded_file, header=None)
@@ -660,7 +643,7 @@ if section == "📊 Inventory Dashboard":
         "Select POS / Data Source",
         ["BLAZE", "Dutchie"],
         index=0,
-        help="Changes how column names are interpreted. Files are still just CSV/XLSX exports.",
+        help="Use raw BLAZE / Dutchie exports with original headers (no hand-edits).",
     )
 
     st.sidebar.header("📂 Upload Core Reports")
@@ -673,7 +656,7 @@ if section == "📊 Inventory Dashboard":
         "Optional Extra Sales Detail (revenue)",
         type=["xlsx"],
         help="Optional: Dutchie 'Total Sales by Product' or similar. "
-             "Currently **ignored for velocity** until revenue views are added.",
+             "Currently ignored for velocity until revenue views are added.",
     )
 
     st.sidebar.markdown("---")
@@ -723,6 +706,7 @@ if section == "📊 Inventory Dashboard":
                 "category", "subcategory", "productcategory", "department", "mastercategory"
             ]
             inv_qty_aliases = [
+                "inventoryavailable", "inventory available",
                 "available", "onhand", "onhandunits", "quantity", "qty",
                 "quantityonhand", "instock", "currentquantity", "current quantity"
             ]
@@ -733,8 +717,9 @@ if section == "📊 Inventory Dashboard":
 
             if not (name_col and cat_col and qty_col):
                 st.error(
-                    "Could not auto-detect inventory columns (product / category / on-hand). "
-                    "Check your Inventory export headers."
+                    "Could not auto-detect inventory columns (product / category / on-hand).\n\n"
+                    "For BLAZE, use the full Products Export with original headers "
+                    "(e.g. 'Name', 'Category', 'Inventory Available')."
                 )
                 st.stop()
 
@@ -767,6 +752,21 @@ if section == "📊 Inventory Dashboard":
 
             # -------- SALES (qty-based ONLY) --------
             sales_raw.columns = sales_raw.columns.astype(str).str.lower()
+
+            # Optional Blaze-specific filter: Completed sales only
+            status_aliases = ["transstatus", "status"]
+            type_aliases = ["transtype", "transactiontype", "type"]
+
+            status_col = detect_column(sales_raw.columns, status_aliases)
+            type_col = detect_column(sales_raw.columns, type_aliases)
+
+            if status_col and type_col:
+                sales_raw[status_col] = sales_raw[status_col].astype(str).str.lower()
+                sales_raw[type_col] = sales_raw[type_col].astype(str).str.lower()
+                sales_raw = sales_raw[
+                    (sales_raw[status_col] == "completed")
+                    & (sales_raw[type_col].isin(["sale", "sales"]))
+                ]
 
             # Auto-detect product name column
             sales_name_aliases = [
@@ -814,8 +814,8 @@ if section == "📊 Inventory Dashboard":
                     "Product Sales file detected but could not find required columns.\n\n"
                     "Looked for some variant of: product / product name, quantity or items sold, "
                     "and category or product category.\n\n"
-                    "Tip: Use Dutchie 'Product Sales' or Blaze 'Sales by Product' exports "
-                    "without manually editing the headers."
+                    "Tip: Use BLAZE 'Sales by Product' or Dutchie 'Product Sales' exports "
+                    "directly, without manually editing the headers."
                 )
                 st.stop()
 
