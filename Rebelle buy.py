@@ -21,17 +21,23 @@ except ImportError:
     PLOTLY_AVAILABLE = False
 
 # ------------------------------------------------------------
-# OPTIONAL / SAFE IMPORT FOR OPENAI (AI BUYER BRAIN)
+# OPTIONAL / SAFE IMPORT FOR OPENAI (AI INVENTORY CHECK)
 # ------------------------------------------------------------
-from openai import OpenAI
-import streamlit as st
+OPENAI_AVAILABLE = False
+ai_client = None
+try:
+    from openai import OpenAI
 
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    # Read API key from Streamlit secrets
+    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", None)
 
-ai_client = OpenAI(api_key=OPENAI_API_KEY)
-except ImportError:
-    AI_AVAILABLE = False
-    ai_client = None
+    if OPENAI_API_KEY and OPENAI_API_KEY.strip():
+        ai_client = OpenAI(api_key=OPENAI_API_KEY)
+        OPENAI_AVAILABLE = True
+    else:
+        OPENAI_AVAILABLE = False
+except Exception:
+    OPENAI_AVAILABLE = False
 
 # =========================
 # CONFIG & BRANDING
@@ -152,28 +158,20 @@ st.markdown(
         color: {main_text} !important;
     }}
 
-    /* Sidebar: DARK, high-contrast for typing */
+    /* Sidebar: light, high-contrast for typing */
     [data-testid="stSidebar"] {{
-        background-color: #181818 !important;
+        background-color: #f3f4f6 !important;
     }}
-    [data-testid="stSidebar"] h1,
-    [data-testid="stSidebar"] h2,
-    [data-testid="stSidebar"] h3,
-    [data-testid="stSidebar"] h4,
-    [data-testid="stSidebar"] h5,
-    [data-testid="stSidebar"] h6,
-    [data-testid="stSidebar"] label,
-    [data-testid="stSidebar"] p,
-    [data-testid="stSidebar"] span {{
-        color: #f5f5f5 !important;
+    [data-testid="stSidebar"] * {{
+        color: #111111 !important;
+        font-size: 0.9rem;
     }}
     [data-testid="stSidebar"] input,
     [data-testid="stSidebar"] textarea,
     [data-testid="stSidebar"] select {{
-        background-color: #262626 !important;
-        color: #f5f5f5 !important;
+        background-color: #ffffff !important;
+        color: #111111 !important;
         border-radius: 4px;
-        border: 1px solid #444444 !important;
     }}
 
     /* PO-only labels in main content */
@@ -306,25 +304,14 @@ def read_inventory_file(uploaded_file):
     Read inventory CSV or Excel while being robust to 3–5 line headers
     (e.g., Dutchie/BLAZE 'Export Date / From Date / To Date' at the top).
     """
-    uploaded_file.seek(0)
     name = uploaded_file.name.lower()
-
-    if name.endswith(".xlsx") or name.endswith(".xls"):
-        tmp = pd.read_excel(uploaded_file, header=None)
-        header_row = 0
-        max_scan = min(10, len(tmp))
-        for i in range(max_scan):
-            row_text = " ".join(str(v) for v in tmp.iloc[i].tolist()).lower()
-            if any(tok in row_text for tok in ["product", "item", "sku", "name"]):
-                header_row = i
-                break
-        uploaded_file.seek(0)
-        df = pd.read_excel(uploaded_file, header=header_row)
-        return df
-
-    # Default: CSV
     uploaded_file.seek(0)
-    tmp = pd.read_csv(uploaded_file, header=None)
+
+    if name.endswith(".csv"):
+        tmp = pd.read_csv(uploaded_file, header=None)
+    else:
+        tmp = pd.read_excel(uploaded_file, header=None)
+
     header_row = 0
     max_scan = min(10, len(tmp))
     for i in range(max_scan):
@@ -332,8 +319,13 @@ def read_inventory_file(uploaded_file):
         if any(tok in row_text for tok in ["product", "item", "sku", "name"]):
             header_row = i
             break
+
     uploaded_file.seek(0)
-    df = pd.read_csv(uploaded_file, header=header_row)
+    if name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file, header=header_row)
+    else:
+        df = pd.read_excel(uploaded_file, header=header_row)
+
     return df
 
 
@@ -341,7 +333,7 @@ def read_sales_file(uploaded_file):
     """
     Read Excel sales report with smart header detection.
     Looks for a row that contains something like 'category' and 'product'
-    (Dutchie 'Total Sales by Product' / BLAZE sales style) and uses that as the header.
+    (Dutchie 'Total Sales by Product' style) and uses that as the header.
     """
     uploaded_file.seek(0)
     tmp = pd.read_excel(uploaded_file, header=None)
@@ -355,110 +347,6 @@ def read_sales_file(uploaded_file):
     uploaded_file.seek(0)
     df = pd.read_excel(uploaded_file, header=header_row)
     return df
-
-
-def ai_adjust_forecast(detail_df, doh_threshold):
-    """
-    Option C: AI buyer brain.
-    Takes the computed detail DataFrame and lets an LLM:
-      - sanity-check days on hand + reorder qty
-      - fix obvious nonsense (zero on hand but huge DOH, etc.)
-    Returns an adjusted copy. If AI not available or fails, returns original.
-    """
-    if not AI_AVAILABLE or ai_client is None:
-        return detail_df
-
-    try:
-        df = detail_df.reset_index(drop=True).copy()
-
-        # Only send a reasonable chunk to the model
-        max_rows = 200
-        if len(df) > max_rows:
-            df_to_send = df.head(max_rows).copy()
-        else:
-            df_to_send = df.copy()
-
-        rows_payload = []
-        for idx, row in df_to_send.iterrows():
-            rows_payload.append(
-                {
-                    "row_index": int(idx),
-                    "subcategory": str(row.get("subcategory", "")),
-                    "strain_type": str(row.get("strain_type", "")),
-                    "packagesize": str(row.get("packagesize", "")),
-                    "onhandunits": float(row.get("onhandunits", 0)),
-                    "unitssold": float(row.get("unitssold", 0)),
-                    "avgunitsperday": float(row.get("avgunitsperday", 0)),
-                    "daysonhand": float(row.get("daysonhand", 0)),
-                    "reorderqty": float(row.get("reorderqty", 0)),
-                }
-            )
-
-        system_prompt = (
-            "You are an expert cannabis retail buyer and inventory strategist. "
-            "You receive a list of category/size rows with on-hand units, units sold, "
-            "average units per day, days on hand, and reorder quantity. "
-            "You MUST return JSON with a single key 'rows', which is a list of objects. "
-            "Each object must contain 'row_index' and any corrected numeric fields you want to override "
-            "(only 'daysonhand' and 'reorderqty'). "
-            "Correct obvious issues like: "
-            " - daysonhand > 0 when onhandunits == 0 "
-            " - daysonhand extremely large (> 365) when there is steady movement "
-            " - reorderqty == 0 while daysonhand is far below the target daysonhand threshold. "
-            f"The desired daysonhand target is {doh_threshold} days. "
-            "If a row looks fine, you can omit it from the 'rows' list. "
-            "Your entire response MUST be valid JSON only, no commentary."
-        )
-
-        user_payload = {
-            "rows": rows_payload
-        }
-
-        completion = ai_client.responses.create(
-            model="gpt-4.1-mini",
-            input=[
-                {
-                    "role": "system",
-                    "content": [{"type": "text", "text": system_prompt}],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(user_payload),
-                        }
-                    ],
-                },
-            ],
-            response_format={"type": "json_object"},
-        )
-
-        raw_text = completion.output[0].content[0].text
-        parsed = json.loads(raw_text)
-
-        for fix in parsed.get("rows", []):
-            idx = fix.get("row_index")
-            if idx is None:
-                continue
-            if idx >= len(df):
-                continue
-            if "daysonhand" in fix:
-                try:
-                    df.at[idx, "daysonhand"] = float(fix["daysonhand"])
-                except Exception:
-                    pass
-            if "reorderqty" in fix:
-                try:
-                    df.at[idx, "reorderqty"] = float(fix["reorderqty"])
-                except Exception:
-                    pass
-
-        return df
-
-    except Exception as e:
-        st.warning(f"AI validation skipped (error: {e})")
-        return detail_df
 
 
 # =========================
@@ -676,6 +564,96 @@ def generate_po_pdf(
 
 
 # =========================
+# SIMPLE AI INVENTORY CHECK
+# =========================
+def ai_inventory_check(detail_view, doh_threshold, data_source):
+    """
+    Send a small slice of the current table to the AI so it can
+    comment on obvious issues: zero on-hand, crazy DOH, etc.
+    """
+    if not OPENAI_AVAILABLE or ai_client is None:
+        return (
+            "AI is not enabled. Add OPENAI_API_KEY to Streamlit secrets "
+            "to turn on the buyer-assist checks."
+        )
+
+    # Keep payload modest
+    sample = detail_view.copy()
+    # Focus on lines that actually matter to a buyer
+    sample = sample.sort_values(
+        ["reorderpriority", "daysonhand"], ascending=[True, True]
+    )
+    sample = sample.head(80)
+
+    # Only send the key columns
+    cols = [
+        c
+        for c in [
+            "mastercategory",
+            "subcategory",
+            "strain_type",
+            "packagesize",
+            "onhandunits",
+            "unitssold",
+            "avgunitsperday",
+            "daysonhand",
+            "reorderqty",
+            "reorderpriority",
+        ]
+        if c in sample.columns
+    ]
+    sample_records = sample[cols].to_dict(orient="records")
+
+    prompt = f"""
+You are an expert cannabis retail buyer and inventory strategist.
+
+You are looking at a slice of an inventory dashboard for a store using {data_source}.
+Each row is a category/size/strain combo with its sales and coverage.
+
+Fields:
+- mastercategory / subcategory (normalized product category)
+- strain_type (indica / sativa / hybrid / disposable / infused etc.)
+- packagesize (like 3.5g, 1g, 5mg, 28g)
+- onhandunits (current inventory units in stock)
+- unitssold (units sold in the lookback window)
+- avgunitsperday (velocity estimate)
+- daysonhand (coverage in days)
+- reorderqty (suggested buy quantity)
+- reorderpriority (1=ASAP, 2=Watch, 3=Comfortable, 4=Dead)
+
+Target days on hand: {doh_threshold}
+
+Data (JSON list of rows):
+{json.dumps(sample_records, indent=2)}
+
+Tasks:
+1. Call out any rows that look obviously wrong or risky
+   (for example: 0 onhand but lots of units sold, DOH way above 120,
+   or suggest reorder but DOH is already high).
+2. Briefly explain what a buyer should pay attention to in this slice:
+   - top 3 categories that are in danger of stockout
+   - anything that looks dead/overbought and could be discounted down.
+3. Keep it short, punchy, and buyer-friendly. No code, just bullet-style advice.
+"""
+
+    try:
+        resp = ai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a sharp, no-BS cannabis retail buyer coach.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=600,
+        )
+        return resp.choices[0].message.content
+    except Exception as e:
+        return f"AI check failed: {e}"
+
+
+# =========================
 # 🔐 THEME TOGGLE + ADMIN + TRIAL GATE
 # =========================
 
@@ -749,18 +727,16 @@ if not st.session_state.is_admin:
 st.title(f"🌿 {APP_TITLE}")
 st.markdown(f"**Client:** {CLIENT_NAME}")
 st.markdown(APP_TAGLINE)
+if OPENAI_AVAILABLE:
+    st.markdown("✅ AI buyer-assist is **ON** for this session.")
+else:
+    st.markdown("⚠️ AI buyer-assist is **OFF** (no API key detected).")
 st.markdown("---")
 
 if not PLOTLY_AVAILABLE:
     st.warning(
         "⚠️ Plotly is not installed in this environment. Charts will be disabled.\n\n"
         "If using Streamlit Cloud, add `plotly` and `reportlab` to your `requirements.txt` file."
-    )
-
-if not AI_AVAILABLE:
-    st.sidebar.warning(
-        "🤖 AI buyer assist not available (missing `openai` Python package). "
-        "Install with `pip install openai` and reboot the app to enable Option C."
     )
 
 # =========================
@@ -788,13 +764,14 @@ if section == "📊 Inventory Dashboard":
 
     st.sidebar.header("📂 Upload Core Reports")
 
-    inv_file = st.sidebar.file_uploader("Inventory CSV / Excel", type=["csv", "xlsx", "xls"])
+    # Accept both CSV and Excel for inventory
+    inv_file = st.sidebar.file_uploader("Inventory File (CSV or Excel)", type=["csv", "xlsx", "xls"])
     product_sales_file = st.sidebar.file_uploader(
-        "Product Sales Report (qty-based)", type=["xlsx"]
+        "Product Sales Report (qty-based Excel)", type=["xlsx", "xls"]
     )
     extra_sales_file = st.sidebar.file_uploader(
         "Optional Extra Sales Detail (revenue)",
-        type=["xlsx"],
+        type=["xlsx", "xls"],
         help="Optional: Dutchie 'Total Sales by Product' or similar. "
              "Currently **ignored for velocity** until revenue views are added.",
     )
@@ -804,13 +781,6 @@ if section == "📊 Inventory Dashboard":
     doh_threshold = st.sidebar.number_input("Target Days on Hand", 1, 60, 21)
     velocity_adjustment = st.sidebar.number_input("Velocity Adjustment", 0.01, 5.0, 0.5)
     date_diff = st.sidebar.slider("Days in Sales Period", 7, 90, 60)
-
-    st.sidebar.markdown("### 🤖 AI Smart Assist")
-    use_ai = st.sidebar.checkbox(
-        "Enable AI smart validation (Option C)",
-        value=True,
-        help="Uses an AI buyer brain to sanity-check days on hand and reorder quantities.",
-    )
 
     # Cache raw dataframes when new files are uploaded
     if inv_file is not None:
@@ -847,22 +817,17 @@ if section == "📊 Inventory Dashboard":
 
             # Auto-detect core inventory columns (supports BLAZE & Dutchie)
             inv_name_aliases = [
-                "product", "productname", "item", "itemname", "name", "skuname", "skuid"
+                "product", "productname", "item", "itemname", "name", "skuname",
+                "skuid", "product name"
             ]
             inv_cat_aliases = [
-                "category", "subcategory", "productcategory", "department", "mastercategory"
+                "category", "subcategory", "productcategory", "department",
+                "mastercategory", "product category", "cannabis"
             ]
             inv_qty_aliases = [
-                "available",
-                "onhand",
-                "onhandunits",
-                "quantity",
-                "qty",
-                "quantityonhand",
-                "instock",
-                "currentquantity",
-                "current quantity",
-                "inventoryavailable",  # BLAZE: 'Inventory Available'
+                "available", "onhand", "onhandunits", "quantity", "qty",
+                "quantityonhand", "instock", "currentquantity", "current quantity",
+                "inventoryavailable", "inventory available"
             ]
 
             name_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_name_aliases])
@@ -910,7 +875,7 @@ if section == "📊 Inventory Dashboard":
             sales_name_aliases = [
                 "product", "productname", "product title", "producttitle",
                 "productid", "name", "item", "itemname", "skuname",
-                "sku", "description"
+                "sku", "description", "product name"
             ]
             name_col_sales = detect_column(
                 sales_raw.columns, [normalize_col(a) for a in sales_name_aliases]
@@ -943,7 +908,8 @@ if section == "📊 Inventory Dashboard":
             mc_aliases = [
                 "mastercategory", "category", "master_category",
                 "productcategory", "product category",
-                "department", "dept", "subcategory"
+                "department", "dept", "subcategory", "productcategoryname",
+                "product category name"
             ]
             mc_col = detect_column(sales_raw.columns, [normalize_col(a) for a in mc_aliases])
 
@@ -992,7 +958,7 @@ if section == "📊 Inventory Dashboard":
                 .reset_index()
             )
             sales_summary["avgunitsperday"] = (
-                sales_summary["unitssold"] / date_diff
+                sales_summary["unitssold"] / max(date_diff, 1)
             ) * velocity_adjustment
 
             # Merge inventory summary with size-level velocity
@@ -1026,7 +992,7 @@ if section == "📊 Inventory Dashboard":
             if missing_rows:
                 detail = pd.concat([detail, pd.DataFrame(missing_rows)], ignore_index=True)
 
-            # DOH + Reorder (granular per row – baseline math)
+            # DOH + Reorder (granular per row)
             detail["daysonhand"] = np.where(
                 detail["avgunitsperday"] > 0,
                 detail["onhandunits"] / detail["avgunitsperday"],
@@ -1036,30 +1002,14 @@ if section == "📊 Inventory Dashboard":
                 detail["daysonhand"]
                 .replace([np.inf, -np.inf], 0)
                 .fillna(0)
+                .astype(int)
             )
 
             detail["reorderqty"] = np.where(
                 detail["daysonhand"] < doh_threshold,
                 np.ceil((doh_threshold - detail["daysonhand"]) * detail["avgunitsperday"]),
                 0,
-            )
-
-            # AI adjustment (Option C) – AFTER baseline math
-            if use_ai and AI_AVAILABLE and ai_client is not None:
-                detail = ai_adjust_forecast(detail, doh_threshold)
-
-            # Final formatting of DOH + reorder qty
-            detail["daysonhand"] = (
-                detail["daysonhand"]
-                .replace([np.inf, -np.inf], 0)
-                .fillna(0)
-                .astype(int)
-            )
-            detail["reorderqty"] = (
-                pd.to_numeric(detail["reorderqty"], errors="coerce")
-                .fillna(0)
-                .astype(int)
-            )
+            ).astype(int)
 
             def tag(row):
                 if row["daysonhand"] <= 7:
@@ -1108,7 +1058,7 @@ if section == "📊 Inventory Dashboard":
 
             def red_low(val):
                 try:
-                    v = float(val)
+                    v = int(val)
                     return "color:#FF3131" if v < doh_threshold else ""
                 except Exception:
                     return ""
@@ -1155,6 +1105,23 @@ if section == "📊 Inventory Dashboard":
                         g.style.applymap(red_low, subset=["daysonhand"]),
                         use_container_width=True,
                     )
+
+            # =======================
+            # AI INVENTORY CHECK
+            # =======================
+            st.markdown("---")
+            st.markdown("### 🤖 AI Inventory Check (Optional)")
+
+            if OPENAI_AVAILABLE:
+                if st.button("Run AI check on current view"):
+                    with st.spinner("Having the AI look over this slice like a buyer..."):
+                        ai_summary = ai_inventory_check(detail_view, doh_threshold, data_source)
+                    st.markdown(ai_summary)
+            else:
+                st.info(
+                    "AI buyer-assist is disabled because no `OPENAI_API_KEY` was found in "
+                    "Streamlit secrets. Add one to turn this on."
+                )
 
         except Exception as e:
             st.error(f"Error: {e}")
