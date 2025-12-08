@@ -23,10 +23,12 @@ except ImportError:
 # ------------------------------------------------------------
 # OPTIONAL / SAFE IMPORT FOR OPENAI (AI BUYER BRAIN)
 # ------------------------------------------------------------
-try:
-    from openai import OpenAI
-    AI_AVAILABLE = True
-    ai_client = OpenAI()
+from openai import OpenAI
+import streamlit as st
+
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+
+ai_client = OpenAI(api_key=OPENAI_API_KEY)
 except ImportError:
     AI_AVAILABLE = False
     ai_client = None
