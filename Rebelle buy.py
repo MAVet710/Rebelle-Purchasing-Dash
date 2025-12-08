@@ -138,23 +138,20 @@ st.markdown(
         color: {main_text} !important;
     }}
 
-    /* Sidebar: dark, high-contrast for typing */
+    /* Sidebar: light, high-contrast for typing */
     [data-testid="stSidebar"] {{
-        background-color: #050816 !important;
+        background-color: #f3f4f6 !important;
     }}
-
     [data-testid="stSidebar"] * {{
-        color: #f9fafb !important;
+        color: #111111 !important;
         font-size: 0.9rem;
     }}
-
     [data-testid="stSidebar"] input,
     [data-testid="stSidebar"] textarea,
     [data-testid="stSidebar"] select {{
-        background-color: #111827 !important;
-        color: #f9fafb !important;
+        background-color: #ffffff !important;
+        color: #111111 !important;
         border-radius: 4px;
-        border: 1px solid #4b5563 !important;
     }}
 
     /* PO-only labels in main content */
@@ -284,48 +281,53 @@ def extract_size(text, context=None):
 
 def read_inventory_file(uploaded_file):
     """
-    Read inventory export (CSV or XLSX) while being robust to header junk.
-    Works for Blaze 'PRODUCTS_EXPORT' and Dutchie-style CSVs.
-    """
-    name = uploaded_file.name.lower()
-    is_excel = name.endswith(".xlsx") or name.endswith(".xls")
+    Read inventory CSV or XLSX while being robust to 3–5 line headers
+    (e.g., Blaze/Dutchie 'Export Date / From Date / To Date' at the top).
 
-    if is_excel:
-        uploaded_file.seek(0)
-        tmp = pd.read_excel(uploaded_file, header=None)
-        header_row = 0
-        max_scan = min(10, len(tmp))
-        for i in range(max_scan):
-            row_text = " ".join(str(v) for v in tmp.iloc[i].tolist()).lower()
-            if any(tok in row_text for tok in ["product", "item", "sku", "name"]):
-                header_row = i
-                break
-        uploaded_file.seek(0)
-        df = pd.read_excel(uploaded_file, header=header_row)
-    else:
-        uploaded_file.seek(0)
+    This is where we grab Blaze **Inventory Available** as the on-hand value.
+    """
+    uploaded_file.seek(0)
+    name = uploaded_file.name.lower()
+
+    # First pass: read without header to detect the real header row
+    if name.endswith(".csv"):
         tmp = pd.read_csv(uploaded_file, header=None)
-        header_row = 0
-        max_scan = min(10, len(tmp))
-        for i in range(max_scan):
-            row_text = " ".join(str(v) for v in tmp.iloc[i].tolist()).lower()
-            if any(tok in row_text for tok in ["product", "item", "sku", "name"]):
-                header_row = i
-                break
-        uploaded_file.seek(0)
+    else:
+        tmp = pd.read_excel(uploaded_file, header=None)
+
+    header_row = 0
+    max_scan = min(10, len(tmp))
+    for i in range(max_scan):
+        row_text = " ".join(str(v) for v in tmp.iloc[i].tolist()).lower()
+        if any(tok in row_text for tok in ["product", "item", "sku", "name"]):
+            header_row = i
+            break
+
+    # Second pass: read with detected header
+    uploaded_file.seek(0)
+    if name.endswith(".csv"):
         df = pd.read_csv(uploaded_file, header=header_row)
+    else:
+        df = pd.read_excel(uploaded_file, header=header_row)
 
     return df
 
 
 def read_sales_file(uploaded_file):
     """
-    Read Excel sales report with smart header detection.
+    Read Excel/CSV sales report with smart header detection.
     Looks for a row that contains something like 'category' and 'product'
-    (Dutchie 'Total Sales by Product' / Blaze 'Sales by Product' style).
+    (Dutchie 'Total Sales by Product' or Blaze Completed Sales Detail),
+    and uses that as the header.
     """
     uploaded_file.seek(0)
-    tmp = pd.read_excel(uploaded_file, header=None)
+    name = uploaded_file.name.lower()
+
+    if name.endswith(".csv"):
+        tmp = pd.read_csv(uploaded_file, header=None)
+    else:
+        tmp = pd.read_excel(uploaded_file, header=None)
+
     header_row = 0
     max_scan = min(15, len(tmp))
     for i in range(max_scan):
@@ -333,8 +335,13 @@ def read_sales_file(uploaded_file):
         if "category" in row_text and ("product" in row_text or "name" in row_text):
             header_row = i
             break
+
     uploaded_file.seek(0)
-    df = pd.read_excel(uploaded_file, header=header_row)
+    if name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file, header=header_row)
+    else:
+        df = pd.read_excel(uploaded_file, header=header_row)
+
     return df
 
 
@@ -659,15 +666,14 @@ if section == "📊 Inventory Dashboard":
 
     st.sidebar.header("📂 Upload Core Reports")
 
-    # now allow CSV or XLSX for inventory (Blaze exports)
-    inv_file = st.sidebar.file_uploader("Inventory Export (CSV/XLSX)", type=["csv", "xlsx", "xls"])
+    inv_file = st.sidebar.file_uploader("Inventory CSV / Excel", type=["csv", "xlsx"])
     product_sales_file = st.sidebar.file_uploader(
-        "Product Sales Report (qty-based)", type=["xlsx"]
+        "Product Sales Report (qty-based)", type=["xlsx", "csv"]
     )
     extra_sales_file = st.sidebar.file_uploader(
         "Optional Extra Sales Detail (revenue)",
-        type=["xlsx"],
-        help="Optional: Dutchie 'Total Sales by Product' or similar. "
+        type=["xlsx", "csv"],
+        help="Optional: Dutchie 'Total Sales by Product' or Blaze detail. "
              "Currently **ignored for velocity** until revenue views are added.",
     )
 
@@ -710,77 +716,41 @@ if section == "📊 Inventory Dashboard":
             # -------- INVENTORY --------
             inv_df.columns = inv_df.columns.str.strip().str.lower()
 
-            # Auto-detect name & category
+            # Auto-detect core inventory columns (supports BLAZE & Dutchie)
             inv_name_aliases = [
                 "product", "productname", "item", "itemname", "name", "skuname", "skuid"
             ]
             inv_cat_aliases = [
                 "category", "subcategory", "productcategory", "department", "mastercategory"
             ]
+            # IMPORTANT: explicitly grab Blaze "Inventory Available"
+            inv_qty_aliases = [
+                "inventoryavailable", "inventory available",   # Blaze
+                "available", "onhand", "onhandunits", "quantity", "qty",
+                "quantityonhand", "instock", "currentquantity", "current quantity"
+            ]
 
             name_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_name_aliases])
             cat_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_cat_aliases])
+            qty_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_qty_aliases])
 
-            if not (name_col and cat_col):
+            if not (name_col and cat_col and qty_col):
                 st.error(
-                    "Could not auto-detect inventory product/category columns. "
-                    "Check your Inventory export headers."
+                    "Could not auto-detect inventory columns (product / category / on-hand). "
+                    "Check your Inventory export headers. For Blaze, be sure 'Inventory Available' "
+                    "is present."
                 )
                 st.stop()
 
-            # ----- ON-HAND UNITS (Blaze-aware) -----
-            # Prefer Blaze "Inventory Available"
-            norm_map = {normalize_col(c): c for c in inv_df.columns}
-            qty_series = None
-
-            if "inventoryavailable" in norm_map:
-                col = norm_map["inventoryavailable"]
-                qty_series = pd.to_numeric(inv_df[col], errors="coerce").fillna(0)
-            else:
-                # Fallback: sum INV: location columns (Safe, Vault, Sales floor, etc.)
-                inv_loc_cols = [c for c in inv_df.columns if c.strip().lower().startswith("inv:")]
-                if inv_loc_cols:
-                    qty_series = (
-                        inv_df[inv_loc_cols]
-                        .apply(pd.to_numeric, errors="coerce")
-                        .fillna(0)
-                        .sum(axis=1)
-                    )
-
-            # Final fallback: old alias-based detection
-            if qty_series is None:
-                inv_qty_aliases = [
-                    "inventoryavailable",
-                    "inventoryavailableunits",
-                    "available",
-                    "onhand",
-                    "onhandunits",
-                    "quantity",
-                    "qty",
-                    "quantityonhand",
-                    "instock",
-                    "currentquantity",
-                    "current quantity",
-                ]
-                qty_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_qty_aliases])
-                if qty_col:
-                    qty_series = pd.to_numeric(inv_df[qty_col], errors="coerce").fillna(0)
-                else:
-                    st.error(
-                        "Could not find an on-hand inventory column. "
-                        "Looked for 'Inventory Available' or any 'INV:' columns."
-                    )
-                    st.stop()
-
-            # Build normalized inventory frame
             inv_df = inv_df.rename(
                 columns={
                     name_col: "itemname",
                     cat_col: "subcategory",
+                    qty_col: "onhandunits",
                 }
             )
-            inv_df["onhandunits"] = qty_series
 
+            inv_df["onhandunits"] = pd.to_numeric(inv_df["onhandunits"], errors="coerce").fillna(0)
             # normalize to Rebelle canonical categories
             inv_df["subcategory"] = inv_df["subcategory"].apply(normalize_rebelle_category)
 
@@ -801,6 +771,19 @@ if section == "📊 Inventory Dashboard":
 
             # -------- SALES (qty-based ONLY) --------
             sales_raw.columns = sales_raw.columns.astype(str).str.lower()
+
+            # Filter Blaze Completed Sales Detail to completed transactions only
+            status_aliases = ["transstatus", "transactionstatus", "status"]
+            status_col = detect_column(
+                sales_raw.columns, [normalize_col(a) for a in status_aliases]
+            )
+            if status_col:
+                sales_raw = sales_raw[
+                    sales_raw[status_col]
+                    .astype(str)
+                    .str.lower()
+                    .isin(["completed", "complete"])
+                ]
 
             # Auto-detect product name column
             sales_name_aliases = [
@@ -848,7 +831,7 @@ if section == "📊 Inventory Dashboard":
                     "Product Sales file detected but could not find required columns.\n\n"
                     "Looked for some variant of: product / product name, quantity or items sold, "
                     "and category or product category.\n\n"
-                    "Tip: Use Dutchie 'Product Sales' or Blaze 'Sales by Product' exports "
+                    "Tip: Use Blaze 'Completed Sales Detail' or Dutchie 'Product Sales' exports "
                     "without manually editing the headers."
                 )
                 st.stop()
@@ -862,10 +845,9 @@ if section == "📊 Inventory Dashboard":
                 }
             )
 
-            # CLEAN QUANTITY: handle "1.0 ea", "3 g", etc.
-            qty_str = sales_raw["unitssold"].astype(str)
-            qty_clean = qty_str.str.replace(r"[^0-9\.\-]", "", regex=True)
-            sales_raw["unitssold"] = pd.to_numeric(qty_clean, errors="coerce").fillna(0)
+            sales_raw["unitssold"] = pd.to_numeric(
+                sales_raw["unitssold"], errors="coerce"
+            ).fillna(0)
 
             # normalize categories here as well
             sales_raw["mastercategory"] = sales_raw["mastercategory"].apply(normalize_rebelle_category)
