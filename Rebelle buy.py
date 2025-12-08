@@ -924,13 +924,22 @@ if section == "📊 Inventory Dashboard":
                 0,
             ).astype(int)
 
+            # ---- NEW TAG LOGIC: better separation of Reorder vs Dead Item ----
             def tag(row):
+                # No movement but stock on hand → Dead Item
+                if row["unitssold"] == 0 and row["onhandunits"] > 0:
+                    return "4 – Dead Item"
+                # We sold units but are now out of stock → Reorder ASAP
+                if row["unitssold"] > 0 and row["onhandunits"] == 0:
+                    return "1 – Reorder ASAP"
+                # Any other zero-velocity case → Dead Item
+                if row["avgunitsperday"] == 0:
+                    return "4 – Dead Item"
+                # Standard DOH-based tiers
                 if row["daysonhand"] <= 7:
                     return "1 – Reorder ASAP"
                 if row["daysonhand"] <= 21:
                     return "2 – Watch Closely"
-                if row["avgunitsperday"] == 0:
-                    return "4 – Dead Item"
                 return "3 – Comfortable Cover"
 
             detail["reorderpriority"] = detail.apply(tag, axis=1)
