@@ -138,26 +138,23 @@ st.markdown(
         color: {main_text} !important;
     }}
 
-    /* Sidebar: very light, high-contrast for typing */
+    /* Sidebar: dark, high-contrast for typing */
     [data-testid="stSidebar"] {{
-        background-color: #f9fafb !important;
+        background-color: #050816 !important;
     }}
+
     [data-testid="stSidebar"] * {{
-        color: #111827 !important;
+        color: #f9fafb !important;
         font-size: 0.9rem;
     }}
+
     [data-testid="stSidebar"] input,
     [data-testid="stSidebar"] textarea,
     [data-testid="stSidebar"] select {{
-        background-color: #ffffff !important;
-        color: #111827 !important;
+        background-color: #111827 !important;
+        color: #f9fafb !important;
         border-radius: 4px;
-        border: 1px solid #d1d5db !important;
-    }}
-    [data-testid="stSidebar"] .stFileUploader {{
-        background-color: #e5e7eb !important;
-        border-radius: 6px;
-        padding: 0.5rem;
+        border: 1px solid #4b5563 !important;
     }}
 
     /* PO-only labels in main content */
@@ -285,28 +282,6 @@ def extract_size(text, context=None):
     return "unspecified"
 
 
-def parse_units(val):
-    """
-    Parse Blaze-style 'Quantity Sold' strings like '1.0 ea' into a float.
-    Falls back safely to 0 on anything weird.
-    """
-    if val is None or (isinstance(val, float) and np.isnan(val)):
-        return 0.0
-    s = str(val)
-    # grab the first numeric chunk
-    m = re.search(r"([-+]?\d*\.?\d+)", s)
-    if m:
-        try:
-            return float(m.group(1))
-        except ValueError:
-            return 0.0
-    # last resort
-    try:
-        return float(val)
-    except Exception:
-        return 0.0
-
-
 def read_inventory_file(uploaded_file):
     """
     Read inventory CSV while being robust to 3–5 line headers
@@ -330,8 +305,7 @@ def read_sales_file(uploaded_file):
     """
     Read Excel sales report with smart header detection.
     Looks for a row that contains something like 'category' and 'product'
-    (Dutchie 'Total Sales by Product' or Blaze 'All Sales Detail' style)
-    and uses that as the header.
+    (Dutchie 'Total Sales by Product' style) and uses that as the header.
     """
     uploaded_file.seek(0)
     tmp = pd.read_excel(uploaded_file, header=None)
@@ -675,7 +649,7 @@ if section == "📊 Inventory Dashboard":
     extra_sales_file = st.sidebar.file_uploader(
         "Optional Extra Sales Detail (revenue)",
         type=["xlsx"],
-        help="Optional: Dutchie 'Total Sales by Product' or Blaze 'All Sales' export. "
+        help="Optional: Dutchie 'Total Sales by Product' or similar. "
              "Currently **ignored for velocity** until revenue views are added.",
     )
 
@@ -727,8 +701,7 @@ if section == "📊 Inventory Dashboard":
             ]
             inv_qty_aliases = [
                 "available", "onhand", "onhandunits", "quantity", "qty",
-                "quantityonhand", "instock", "currentquantity", "current quantity",
-                "inventoryavailable"
+                "quantityonhand", "instock", "currentquantity", "current quantity"
             ]
 
             name_col = detect_column(inv_df.columns, [normalize_col(a) for a in inv_name_aliases])
@@ -776,7 +749,7 @@ if section == "📊 Inventory Dashboard":
             sales_name_aliases = [
                 "product", "productname", "product title", "producttitle",
                 "productid", "name", "item", "itemname", "skuname",
-                "sku", "description", "product name"
+                "sku", "description"
             ]
             name_col_sales = detect_column(
                 sales_raw.columns, [normalize_col(a) for a in sales_name_aliases]
@@ -809,7 +782,7 @@ if section == "📊 Inventory Dashboard":
             mc_aliases = [
                 "mastercategory", "category", "master_category",
                 "productcategory", "product category",
-                "department", "dept", "subcategory", "productcategory"
+                "department", "dept", "subcategory"
             ]
             mc_col = detect_column(sales_raw.columns, [normalize_col(a) for a in mc_aliases])
 
@@ -818,7 +791,7 @@ if section == "📊 Inventory Dashboard":
                     "Product Sales file detected but could not find required columns.\n\n"
                     "Looked for some variant of: product / product name, quantity or items sold, "
                     "and category or product category.\n\n"
-                    "Tip: Use Dutchie 'Product Sales' or Blaze 'Sales / All Sales' exports "
+                    "Tip: Use Dutchie 'Product Sales' or Blaze 'Sales by Product' exports "
                     "without manually editing the headers."
                 )
                 st.stop()
@@ -832,13 +805,15 @@ if section == "📊 Inventory Dashboard":
                 }
             )
 
-            # 🔢 Robust Blaze quantity parsing (e.g. '1.0 ea')
-            sales_raw["unitssold"] = sales_raw["unitssold"].apply(parse_units)
+            # CLEAN QUANTITY: handle "1.0 ea", "3 g", etc.
+            qty_str = sales_raw["unitssold"].astype(str)
+            qty_clean = qty_str.str.replace(r"[^0-9\.\-]", "", regex=True)
+            sales_raw["unitssold"] = pd.to_numeric(qty_clean, errors="coerce").fillna(0)
 
-            # normalize categories here as well
+            # normalize categories
             sales_raw["mastercategory"] = sales_raw["mastercategory"].apply(normalize_rebelle_category)
 
-            # Filter out accessories / 'all' (anything with "accessor")
+            # Filter out accessories / 'all'
             sales_df = sales_raw[
                 ~sales_raw["mastercategory"].astype(str).str.contains("accessor")
                 & (sales_raw["mastercategory"] != "all")
